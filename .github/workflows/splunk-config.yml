@@ -20,6 +20,7 @@ on:
       - apps-src/**
       - detections/**
       - taaws-config/**
+      - sse-config/**
       - scripts/**
       - .github/workflows/splunk-config.yml
   push:
@@ -28,6 +29,7 @@ on:
       - apps-src/**
       - detections/**
       - taaws-config/**
+      - sse-config/**
       - scripts/**
       - .github/workflows/splunk-config.yml
 
@@ -250,3 +252,40 @@ jobs:
         run: pip install pyyaml
       - name: Compile + push TA-aws account + inputs to REST
         run: bash scripts/deploy-taaws-config.sh
+
+  deploy-sse-data-inventory:
+    # Push the declarative SSE Data Inventory state (sse-config/data-inventory.yml) —
+    # forces our known-good data products into the `success` terminal state in
+    # SSE's data_inventory_products KV-store, so the CIM Compliance dashboard
+    # and MITRE heat-map "Available" coloring activate without a manual
+    # wizard click after every rebuild.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    needs: deploy-apps
+    environment: test
+    env:
+      AWS_REGION: ap-southeast-2
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ap-southeast-2
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.10.x
+      - name: Materialize backend config
+        run: |
+          cat > envs/test.backend.hcl <<EOF
+          bucket       = "twai-swarm-tfstate-637675605233"
+          key          = "splunk-detection-poc/test/terraform.tfstate"
+          region       = "ap-southeast-2"
+          use_lockfile = true
+          encrypt      = true
+          EOF
+      - run: terraform init -backend-config=../envs/test.backend.hcl
+        working-directory: terraform
+      - name: Install PyYAML
+        run: pip install pyyaml
+      - name: Push SSE Data Inventory state
+        run: bash scripts/deploy-sse-data-inventory.sh

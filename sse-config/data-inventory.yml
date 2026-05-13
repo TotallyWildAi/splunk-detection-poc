@@ -1,0 +1,28 @@
+# SSE Data Inventory configuration-as-code.
+#
+# SSE's "Data Source Check" mechanism uses a state machine per data product
+# in the `data_inventory_products` KV-store collection. Each row goes
+# through: blocked -> analyzing -> success. The CIM Compliance dashboard
+# and the MITRE heat-map's "Available data source" coloring both gate on
+# product rows being in the `success` state.
+#
+# Out of the box, SSE auto-detects data sources and seeds rows in
+# `analyzing` — but they only advance to `success` after SSE finishes
+# multi-day profiling OR the operator clicks through the Data Source
+# admin UI. To make the IaC story closed-loop, we declaratively mark our
+# known-good data sources as `success` here, and CI re-applies the state
+# on every deploy (idempotent).
+#
+# Each entry must reference a productId (the `_key`) that already exists
+# in SSE's data_inventory_products collection. SSE ships ~291 such rows
+# covering common security products; ours are AWS__CloudTrail and
+# AWS__VPC_Flow_Logs.
+
+products:
+  - product_id: AWS__CloudTrail
+    sourcetype: aws:cloudtrail
+    index: main
+
+  - product_id: AWS__VPC_Flow_Logs
+    sourcetype: aws:cloudwatchlogs:vpcflow
+    index: main
