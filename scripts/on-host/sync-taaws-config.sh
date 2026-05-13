@@ -78,20 +78,29 @@ for row in accounts:
     print(f"  FAIL   {coll}/{name} HTTP {code}\n    response: {body[:200]}")
     fail += 1
 
-# Inputs use try-update-then-create. The update endpoint accepts the full
+# Inputs use GET-first to determine update-vs-create. Splunk's input REST
+# handler is inconsistent about which HTTP code it returns when the entity
+# doesn't exist: GET returns 404, but POST to /<coll>/<name> for a
+# non-existent input returns 400 with "Cannot edit ... because it does
+# not exist". The 400 trips up a try-update-then-create-on-404 pattern,
+# so we check existence explicitly. The update endpoint accepts the full
 # param set EXCEPT `name` (which lives in the URL path) and `disabled`
-# (which has its own /enable + /disable endpoints).
+# (which has its own /enable + /disable endpoints, not the standard
+# update body).
 for row in inputs:
     coll, name, params = row["collection"], row["name"], dict(row["params"])
     update_body = {k: v for k, v in params.items() if k != "name"}
     create_body = params
-    update_url = f"{BASE}/{coll}/{urllib.parse.quote(name, safe='')}"
-    code, body = http("POST", update_url, update_body)
-    if code in (200, 201):
-        print(f"  UPDATE {coll}/{name} ok")
-        ok += 1
-        continue
-    if code == 404:
+    check_url = f"{BASE}/{coll}/{urllib.parse.quote(name, safe='')}"
+
+    code, body = http("GET", check_url)
+    if code == 200:
+        code, body = http("POST", check_url, update_body)
+        if code in (200, 201):
+            print(f"  UPDATE {coll}/{name} ok")
+            ok += 1
+            continue
+    elif code == 404:
         code, body = http("POST", f"{BASE}/{coll}", create_body)
         if code in (200, 201):
             print(f"  CREATE {coll}/{name} ok")
