@@ -61,8 +61,14 @@
     <panel>
       <title>|search on raw events — seconds</title>
       <single>
+        <!-- IMPORTANT: do NOT prefix this query with the literal word
+             `search`. Splunk auto-optimizes `search ... | stats count`
+             into `tstats prestats=true ... WHERE (... search)` and the
+             keyword `search` ends up as a raw-text-match term in the
+             WHERE clause, which returns 0. Using the implicit search
+             form (no leading keyword) skips this auto-optimizer path. -->
         <search>
-          <query>search index=main sourcetype=aws:cloudtrail
+          <query>index=main sourcetype=aws:cloudtrail
 | stats count</query>
           <earliest>$tp.earliest$</earliest>
           <latest>$tp.latest$</latest>
