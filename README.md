@@ -21,12 +21,12 @@ splunk-detection-poc/
 ├── .gitattributes                Enforces LF line endings for cross-platform deploys
 ├── .github/workflows/
 │   ├── terraform.yml             plan/apply infra on PR/push when terraform/** changes
-│   └── splunk-config.yml         validate + deploy apps + push SSE custom content on push when apps-src/** or detections/** changes
+│   └── splunk-config.yml         validate + deploy apps/detections/SSE/TA-aws/data-inventory on push to apps-src/** | detections/** | taaws-config/** | sse-config/** | scripts/**
 ├── terraform/                    IaC root + modules
 │   ├── main.tf                   wires the modules
 │   ├── iam.tf                    Splunk EC2 instance role + profile, base SSM + Secrets Manager perms
 │   ├── iam_github_oidc.tf        GitHub Actions OIDC trust + deploy role
-│   ├── splunk_apps.tf            S3 bucket holding Splunk app packages (objects synced manually, not by TF)
+│   ├── splunk_apps.tf            S3 bucket holding Splunk app packages (objects synced via sync-apps.sh, not TF)
 │   ├── outputs.tf
 │   ├── variables.tf
 │   └── modules/
@@ -34,25 +34,38 @@ splunk-detection-poc/
 │       ├── splunk/               EC2 + cloud-init Splunk install + EBS + admin Secrets Manager secret
 │       ├── alb/                  Public ALB + ACM cert + Cloudflare DNS records
 │       ├── cloudtrail_ingest/    CloudTrail trail + S3 bucket + SQS queue + S3->SQS notifications + Splunk role perms
-│       ├── vpc_flow_logs_ingest/ Flow log + S3 bucket + SQS queue + Splunk role perms (Splunk-side input config pending)
+│       ├── vpc_flow_logs_ingest/ Flow log + S3 bucket + SQS queue + Splunk role perms
 │       └── scheduler/            EventBridge schedule to start/stop EC2 (business hrs)
 ├── envs/                         Per-env .tfvars + .backend.hcl (gitignored, EXAMPLE.* committed)
 ├── apps-src/                     First-party Splunk apps (versioned in git as unpacked dirs)
-│   └── tw_cim_accel/             CIM acceleration override (Change + Authentication) + CloudTrail Authentication
-│                                 mapping (eventtypes/tags/props) + DMA benchmark dashboard.
-│                                 Named `tw_*` so it sorts AFTER `Splunk_SA_CIM` in app-precedence merge.
-├── splunk-apps/                  Third-party Splunkbase packages (.tgz/.spl) - gitignored, README.md tracks what should live here
+│   └── tw_cim_accel/             CIM acceleration override (Change + Authentication + Network_Traffic) +
+│                                 CloudTrail Authentication mapping (eventtypes/tags/props) + DMA benchmark dashboard.
+│                                 Named `tw_*` to satisfy app-precedence ordering; install-apps.sh syncs
+│                                 datamodels.conf into Splunk_SA_CIM/local/ (the only path Splunk reliably
+│                                 honors for datamodel-acceleration overrides).
+├── splunk-apps/                  Third-party Splunkbase packages (.tgz/.spl) - gitignored, README.md tracks expected contents
+├── taaws-config/                 Declarative TA-aws config-as-code (account + SQS-Based S3 input stanzas)
+│   └── config.yml
+├── sse-config/                   Declarative SSE state-as-code (Data Inventory product status)
+│   └── data-inventory.yml
 ├── scripts/
 │   ├── sync-apps.sh              Builds .tgz from apps-src/, syncs to S3, SSM-triggers install on EC2.
 │   │                             Supports --custom-only and --no-delete flags for CI safety.
-│   ├── compile-detections-to-sse.py
-│   │                             Reads detections/**/*.yml, emits ShowcaseInfo rows ready for SSE custom_content KV-store.
-│   ├── deploy-sse-custom-content.sh
-│   │                             Runs the compiler, uploads JSON + on-host script to S3, SSM-triggers the writer on the EC2.
-│   └── on-host/
-│       └── sync-sse-content.sh   Runs ON the Splunk EC2: PUTs/POSTs each ShowcaseInfo row to /servicesNS/.../storage/collections/data/custom_content
+│   ├── compile-detections-to-sse.py            YAML -> SSE ShowcaseInfo rows
+│   ├── compile-detections-to-savedsearches.py  YAML -> Splunk saved-search REST payloads
+│   ├── compile-taaws-config.py                 YAML -> TA-aws account+input REST payloads
+│   ├── compile-sse-data-inventory.py           YAML -> SSE data_inventory_products patches
+│   ├── deploy-sse-custom-content.sh            local + CI driver, SSM-via-S3 -> custom_content KV-store
+│   ├── deploy-detections.sh                    local + CI driver -> /services/saved/searches
+│   ├── deploy-taaws-config.sh                  local + CI driver -> /servicesNS/.../Splunk_TA_aws
+│   ├── deploy-sse-data-inventory.sh            local + CI driver -> data_inventory_products KV-store
+│   └── on-host/                                executed on the EC2 via SSM (no public 8089 exposure)
+│       ├── sync-sse-content.sh                 writes to SSE custom_content KV-store
+│       ├── sync-detection-searches.sh          writes saved searches via REST
+│       ├── sync-taaws-config.sh                writes TA-aws account + inputs via REST
+│       └── sync-sse-data-inventory.sh          patches data_inventory_products KV-store
 ├── detections/                   Detection content (YAML), schema-validated in CI
-│   ├── SCHEMA.md                 YAML format spec - fields, MITRE mapping, tests block
+│   ├── SCHEMA.md                 YAML format spec — fields, MITRE mapping, tests block
 │   └── aws/                      One file per detection, kebab-case
 └── docs/
     ├── splunk-enterprise-security-notes.md
@@ -64,29 +77,49 @@ splunk-detection-poc/
 
 | Phase | Description | Status |
 |-------|-------------|--------|
-| 1   | Skeleton + Splunk EC2 + ALB + HTTPS + ACM (Splunk native auth) + GH Actions OIDC + business-hours scheduler | Done |
-| 2.1 | CloudTrail → S3 → SQS → TA-aws ingestion | Done |
-| 2.2 | VPC Flow Logs ingestion (infra deployed; Splunk-side input config pending UI step) | Mostly done |
+| 1   | Skeleton + Splunk EC2 + ALB + HTTPS + ACM (Splunk native auth) + GH Actions OIDC + business-hours scheduler | **Done** |
+| 2.1 | CloudTrail → S3 → SQS → TA-aws ingestion | **Done** |
+| 2.2 | VPC Flow Logs ingestion (infra + TA-aws input stanza both in code) | **Done** |
 | 2.3 | GuardDuty findings ingestion | Planned |
 | 2.4 | HEC examples (synthetic auth-fail events) | Planned |
-| 3   | DMA: CIM datamodels (Change, Authentication) accelerated + benchmark dashboard | In progress (acceleration override pending) |
-| 3.1 | CloudTrail → Authentication CIM mapping (eventtypes/tags/props in `tw_cim_accel`) | Done (181 events tagged as `authentication`) |
-| 4   | 7 initial SPL detections + MITRE ATT&CK mapping in `detections/aws/` | Done |
-| 4.5 | SSE Custom Content registration — detections appear in SSE MITRE ATT&CK heat map | Done (via `splunk-config` CI job `deploy-sse-content`) |
-| 5   | Detections-as-Code REST deploy — compile `detections/*.yml` → `savedsearches.conf` via Splunk REST API | Planned |
+| 3   | DMA: Change + Authentication accelerated + benchmark dashboard | **Done** |
+| 3.1 | CloudTrail → Authentication CIM mapping (eventtypes/tags/props in `tw_cim_accel`) | **Done** (180+ events tagged `authentication`) |
+| 3.2 | Network_Traffic CIM datamodel accelerated for VPC Flow Logs | **Done** |
+| 4   | 7 initial SPL detections + MITRE ATT&CK mapping in `detections/aws/` | **Done** |
+| 4.5 | SSE Custom Content registration — detections appear in SSE MITRE ATT&CK heat map | **Done** (CI job `deploy-sse-content`) |
+| 4.6 | SSE Data Inventory state-as-code (CIM Compliance dashboard + heat-map "Available" coloring unlock) | **Done** (CI job `deploy-sse-data-inventory`) |
+| 5   | Detections-as-Code REST deploy — compile `detections/*.yml` → `/services/saved/searches` | **Done** (CI job `deploy-detections`; 7 scheduled saved searches live) |
+| 5.1 | TA-aws account + SQS-Based S3 input stanzas as code | **Done** (CI job `deploy-taaws-config`) |
+| DR  | Disaster-recovery runbook + EC2-rebuild test (terraform apply -replace + workflow_dispatch) | **Done** — see `docs/disaster-recovery.md`, verified 2026-05-13 |
 | 6   | AI detection workflow (threat-intel → Claude → SPL draft → automated test) | Planned |
-| 7   | Demo polish + runbook | Planned |
+| 7   | Demo polish: walkthrough doc + screenshots + curated launcher dashboard | Planned (DR runbook done as a subset) |
 
 ## CI/CD
 
-Two-pipeline split so content changes don't run terraform plan/apply, and infra changes don't try to redeploy Splunk content.
+Two-pipeline split so content changes don't run terraform plan/apply, and infra changes don't try to redeploy Splunk content. Both workflows accept `workflow_dispatch` for manual re-runs.
 
 **`.github/workflows/terraform.yml`** — triggers on `terraform/**` or `envs/EXAMPLE.*`. plan on PR (artifact), apply on push to main.
 
-**`.github/workflows/splunk-config.yml`** — triggers on `apps-src/**`, `detections/**`, or `scripts/sync-apps.sh`. Jobs:
-- `validate` — YAML schema check on `detections/*.yml`, .conf sanity on `apps-src/**/*.conf` (BOM, CRLF, duplicate stanzas).
-- `deploy-apps` (push to main only) — `terraform init` (read-only, to fetch bucket + instance ID), `sync-apps.sh --custom-only --no-delete`, SSM-triggers `/opt/splunk-poc/install-apps.sh` on the EC2.
-- `deploy-sse-content` (push to main only, needs `deploy-apps`) — compiles `detections/*.yml` to SSE ShowcaseInfo rows, uploads JSON + on-host script to S3, SSM-triggers the writer to PUT/POST rows into the SSE `custom_content` KV collection. After this runs, the detections show up in the SSE MITRE ATT&CK heat map filterable by Originating App = `TotallyWildAi Detections`.
+**`.github/workflows/splunk-config.yml`** — triggers on `apps-src/**`, `detections/**`, `taaws-config/**`, `sse-config/**`, or `scripts/**`. Jobs (in order):
+
+1. **`validate`** — YAML schema check on `detections/*.yml`; .conf sanity check on `apps-src/**/*.conf` (UTF-8 BOM, CRLF endings, duplicate stanzas).
+2. **`deploy-apps`** (push to main only) — `terraform init` (read-only, to fetch bucket + instance ID outputs), `sync-apps.sh --custom-only --no-delete`, SSM-triggers `/opt/splunk-poc/install-apps.sh` on the EC2.
+3. **`deploy-sse-content`** (needs `deploy-apps`) — compiles `detections/*.yml` to SSE ShowcaseInfo rows, REST PUT/POST to SSE `custom_content` KV-store. After this runs, detections appear in the SSE MITRE ATT&CK heat map filterable by Originating App = `TotallyWildAi Detections`.
+4. **`deploy-detections`** (needs `deploy-apps`) — compiles `detections/*.yml` to Splunk saved-search REST payloads, POSTs to `/services/saved/searches`. Creates / updates 7 scheduled, alerting saved searches.
+5. **`deploy-taaws-config`** (needs `deploy-apps`) — compiles `taaws-config/config.yml` to TA-aws REST payloads, POSTs to `/servicesNS/.../Splunk_TA_aws/{splunk_ta_aws_aws_account,data/inputs/aws_sqs_based_s3}`. Creates / updates the AWS account stanza + the SQS-Based S3 input stanzas (CloudTrail + VPC Flow).
+6. **`deploy-sse-data-inventory`** (needs `deploy-apps`) — compiles `sse-config/data-inventory.yml` to patch rows for SSE's `data_inventory_products` KV-store, REST POST. Marks our two AWS products as `status=success` so the CIM Compliance dashboard + MITRE heat-map "Available" coloring activate.
+
+All four deploy jobs use the same SSM-via-S3 architecture: CI uploads payload + on-host script to S3, sends one SSM SendCommand, the EC2 fetches both from S3 and executes locally. The Splunk management port `:8089` is never exposed beyond the EC2's loopback.
+
+## Disaster recovery
+
+Full rebuild path documented in [`docs/disaster-recovery.md`](docs/disaster-recovery.md). Verified end-to-end on 2026-05-13:
+
+1. `terraform apply -replace=module.splunk.aws_instance.splunk` — destroys + recreates the EC2 from `user_data.sh.tftpl`. ~6 min for cloud-init to finish.
+2. `gh workflow run splunk-config` — re-deploys all Splunk content. ~5 min.
+3. Total downtime from failure detection to first detection-eligible event indexed: **~15 minutes**.
+
+Every piece of runtime state is reproducible from git. No hand-patches; the rebuild test specifically surfaced (and fixed) one bug — HTTP 400 vs 404 inconsistency in the TA-aws input REST handler — which would have bitten any future DR scenario.
 
 ## Operational notes
 
@@ -102,7 +135,9 @@ curl -ks -u admin@totallywild.ai:$PW -X POST \
   -d 'sqs_sns_validation=0'
 ```
 
-**TA-aws Configuration page crashes on first load** with `cannot unpack non-iterable NoneType object` because it ships without an initial `aws_account.conf`. Seed an empty `[default]` stanza in `/opt/splunk/etc/apps/Splunk_TA_aws/local/aws_account.conf` and restart Splunk.
+**TA-aws Configuration page crashes on first load** with `cannot unpack non-iterable NoneType object` because it ships without an initial `aws_account.conf`. Phase 5.1's REST-based account creation bypasses the UI entirely — the `deploy-taaws-config` CI job writes the account stanza directly, so this crash is no longer reachable in our flow.
+
+**TA-aws input REST returns 400 (not 404) for non-existent entities.** When POSTing to `/data/inputs/aws_sqs_based_s3/<name>` for an input that doesn't exist, the handler returns `400 "Cannot edit ... because it does not exist"` rather than `404`. This breaks try-update-then-create-on-404 patterns. `scripts/on-host/sync-taaws-config.sh` works around this with a GET-first existence probe (GET correctly returns 404). Surfaced by the disaster-recovery rebuild test, fix is in `a08e289`.
 
 **Splunk 10.2.x boot-start requires careful ownership.** The `.deb` chowns `/opt/splunk` to `splunk:splunk`; running `splunk start --run-as-root` may leave new files root-owned. The systemd unit runs as `User=splunk`, so any root-owned files break the next stop/start cycle. `user_data.sh.tftpl` handles this by chowning back to `splunk:splunk` before enabling boot-start, and `install-apps.sh` re-chowns after each app install and uses `systemctl restart Splunkd` (not `splunk restart --run-as-root`).
 
