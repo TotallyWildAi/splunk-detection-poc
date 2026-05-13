@@ -47,12 +47,28 @@ TACTIC_MAP = {
     "Impact":               "TA0040",
 }
 
-# Our YAML's data_source slugs -> SSE data_source_categories IDs. These IDs
-# drive the "Available" colour on the heat map (lit when the source is
-# onboarded). Add entries as we ingest more data sources.
+# Our YAML's data_source slugs -> SSE's internal eventtype IDs that the
+# corresponding data_inventory_products row offers. These power the
+# "Content (Available)" count on the MITRE ATT&CK heat map: a detection
+# is "Available" iff its data_source_categories overlap with the
+# eventtypeIds of a product currently marked status=success.
+#
+# These IDs are SSE-internal (NOT the MITRE ATT&CK data-source D-codes
+# like DS0025CloudService). MITRE D-codes look identical syntactically
+# but won't intersect with anything in SSE's catalog. Verified by
+# reading AWS__CloudTrail.eventtypeId on the live EC2:
+#   "DS003Authentication-ET01Success|DS037Change-ET01Change|
+#    DS037Change-ET02ChangeAccount|DS001MAIL-ET01Access|
+#    DS003Authentication-ET01SuccessDefault"
+# and the equivalent for AWS__VPC_Flow_Logs.
+#
+# Pipe-delimited values are OR'd: any single hit marks the detection
+# Available. Listing all eventtypeIds the product provides keeps our
+# rows future-proof if SSE narrows a detection to a specific eventtype
+# subset.
 DATA_SOURCE_MAP = {
-    "aws_cloudtrail": "DS0025CloudService",
-    "aws_vpcflow":    "DS0029NetworkTraffic",
+    "aws_cloudtrail": "DS003Authentication-ET01Success|DS037Change-ET01Change|DS037Change-ET02ChangeAccount",
+    "aws_vpcflow":    "DS010NetworkCommunication-ET01Traffic|DS010NetworkCommunication-ET01TrafficAllowed|DS010NetworkCommunication-ET01TrafficBlocked",
 }
 
 # Kill chain ATT&CK tactic -> Lockheed Martin phase, for the optional
