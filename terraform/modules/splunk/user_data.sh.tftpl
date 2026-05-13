@@ -59,10 +59,25 @@ EOF
 chown splunk:splunk /opt/splunk/etc/system/local/user-seed.conf
 chmod 600 /opt/splunk/etc/system/local/user-seed.conf
 
-# Accept the license + enable boot-start as the splunk user. This also starts
-# splunkd, which on first boot consumes user-seed.conf.
+# First boot: start splunkd as root so user-seed.conf is consumed and the
+# admin password is hashed into passwd. Splunk 10.2.x requires --run-as-root
+# when running interactively as root (the implicit-root path is deprecated).
 /opt/splunk/bin/splunk start --accept-license --answer-yes --no-prompt --seed-passwd "$${SPLUNK_PASSWORD}" --run-as-root
+
+# enable boot-start needs splunkd stopped. We stop here, install the systemd
+# unit, then start the service via systemctl. Without this stop-then-enable
+# step the systemd unit never gets installed and the EC2 won't auto-start
+# Splunk on the next scheduler stop/start cycle.
+/opt/splunk/bin/splunk stop --run-as-root
+
+# Re-assert splunk-user ownership: parts of /opt/splunk may have been written
+# as root during the --run-as-root first boot. The systemd unit Splunk creates
+# runs as User=splunk, so the splunk user has to own its tree.
+chown -R splunk:splunk /opt/splunk
+
 /opt/splunk/bin/splunk enable boot-start -user splunk -systemd-managed 1 --accept-license --answer-yes --no-prompt
+systemctl daemon-reload
+systemctl start Splunkd
 
 # ─── Enable HEC (HTTP Event Collector) ─────────────────────────────────
 # /opt/splunk/bin/splunk needs splunkd up. Wait a moment for the REST endpoint
@@ -133,9 +148,19 @@ for f in "$STAGE"/*.tgz "$STAGE"/*.tar.gz "$STAGE"/*.spl "$STAGE"/*.zip; do
 done
 shopt -u nullglob
 
+# `splunk install app` extracts each app under /opt/splunk/etc/apps/ as root
+# (this script runs from SSM as root). The systemd Splunkd unit runs as
+# User=splunk, so any root-owned files block Splunk from writing app-local
+# state (KV-store, lookups, .conf overrides written from the UI). Restore
+# ownership before restarting.
+chown -R splunk:splunk /opt/splunk/etc/apps
+
 if [ "$INSTALLED_ANY" = "1" ]; then
-  echo "[install-apps] restarting splunkd"
-  /opt/splunk/bin/splunk restart --run-as-root || echo "[install-apps] splunk restart returned non-zero"
+  echo "[install-apps] restarting splunkd via systemd"
+  # `splunk restart --run-as-root` would start splunkd back as root and
+  # re-introduce the ownership drift fixed above. systemctl restart goes
+  # through the Splunkd.service unit, which runs as User=splunk.
+  systemctl restart Splunkd || echo "[install-apps] systemctl restart Splunkd returned non-zero"
 else
   echo "[install-apps] no packages found in s3://$BUCKET/ — skipping restart"
 fi
