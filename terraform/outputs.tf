@@ -50,11 +50,6 @@ output "github_actions_role_arn" {
 }
 
 output "splunk_apps_bucket" {
-  description = "S3 bucket name holding the Splunk app packages uploaded by Terraform."
+  description = "S3 bucket name holding the Splunk app packages. Objects are NOT managed by Terraform — sync them via scripts/sync-apps.sh."
   value       = aws_s3_bucket.splunk_apps.bucket
-}
-
-output "splunk_apps_keys" {
-  description = "List of S3 object keys (filenames) currently uploaded to the Splunk apps bucket."
-  value       = sort(tolist(local.splunk_apps_files))
 }

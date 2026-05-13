@@ -1,17 +1,21 @@
-# Splunk app packages: local files under ../splunk-apps/ get uploaded to a
-# private S3 bucket on `terraform apply`, then the Splunk EC2 pulls them down
-# at boot via cloud-init and installs each one.
+# Splunk app packages: the BUCKET is managed by Terraform, but the OBJECTS
+# inside it are NOT — they're synced from the local `../splunk-apps/`
+# directory by `scripts/sync-apps.sh` (run manually from a developer machine).
 #
-# Bucket layout:
-#   s3://${local.name_prefix}-apps-${local.account_id}/<filename>
+# Why this split?
+# The app .tgz/.tar.gz/.spl files are too big to commit to git AND vendor-
+# licensed (some Splunkbase ToS prohibit redistribution). They live locally
+# at `../splunk-apps/`, gitignored. If we managed objects via
+# `aws_s3_object` + `fileset()`, CI's checkout would find an empty
+# `splunk-apps/` directory and Terraform would happily destroy every
+# object in the bucket on the next CI apply. Removing object management
+# from Terraform avoids that footgun entirely.
 #
-# Versioning is enabled so we keep a history of app uploads (rollback path).
-# data.aws_caller_identity.current is already declared in locals.tf.
-
-locals {
-  splunk_apps_dir   = "${path.root}/../splunk-apps"
-  splunk_apps_files = fileset(local.splunk_apps_dir, "*.{tgz,tar.gz,spl,zip}")
-}
+# Workflow:
+#   1. Drop new .tgz / .tar.gz / .spl / .zip into ../splunk-apps/
+#   2. ./scripts/sync-apps.sh         (uploads + triggers re-install on EC2)
+#
+# Versioning is on so we keep a history of app uploads (rollback path).
 
 resource "aws_s3_bucket" "splunk_apps" {
   bucket = "${local.name_prefix}-apps-${local.account_id}"
@@ -46,17 +50,4 @@ resource "aws_s3_bucket_public_access_block" "splunk_apps" {
   block_public_policy     = true
   ignore_public_acls      = true
   restrict_public_buckets = true
-}
-
-# Upload every local app package. etag = filemd5(...) so Terraform re-uploads
-# when the local file content changes.
-resource "aws_s3_object" "splunk_apps" {
-  for_each = local.splunk_apps_files
-
-  bucket = aws_s3_bucket.splunk_apps.id
-  key    = each.value
-  source = "${local.splunk_apps_dir}/${each.value}"
-  etag   = filemd5("${local.splunk_apps_dir}/${each.value}")
-
-  tags = local.common_tags
 }

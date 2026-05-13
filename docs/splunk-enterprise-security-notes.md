@@ -55,7 +55,7 @@ flowchart TB
             SMADMIN["Secrets Manager:<br/>splunk admin password"]
             SMTUN["Secrets Manager:<br/>cloudflared tunnel token"]
             SCHED["EventBridge Scheduler<br/>start 09:00 / stop 18:00 AEST"]
-            OIDC["IAM OIDC + splunk-poc-gha-deploy role"]
+            OIDC["IAM OIDC<br/>splunk-poc-gha-deploy"]
             SSM["AWS Systems Manager<br/>(no SSH; Session Manager only)"]
         end
     end
@@ -78,8 +78,8 @@ flowchart TB
     SMTUN -.->|read at boot| CFD
     S3APPS -.->|aws s3 sync<br/>+ splunk install app| apps
 
-    GHA -->|OIDC assume| OIDC
-    OIDC -->|terraform apply| aws
+    GHA -->|assume-role-with-web-identity| OIDC
+    OIDC -.->|terraform apply<br/>credentials| ec2
 
     ec2 -->|egress via| NAT
     NAT -->|internet| IGW
