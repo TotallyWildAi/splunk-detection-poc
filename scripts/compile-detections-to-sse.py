@@ -19,6 +19,7 @@ import glob
 import json
 import os
 import sys
+import time
 from typing import Any
 
 try:
@@ -197,7 +198,22 @@ def main(argv: list[str]) -> int:
             failures += 1
             continue
 
-        rows.append({"_key": doc["id"], "json": json.dumps(showcase, ensure_ascii=False)})
+        # SSE's generateShowcaseInfo.py loader expects these fields at the
+        # ROW level, not inside the json blob:
+        #   showcaseId, channel, user, _time
+        # Verified by reading the loader (Splunk_SA_CIM bin/), which does
+        # `content['channel']`, `content['user']`, `content['_time']`,
+        # `content['showcaseId']` on each KV row before merging into the
+        # in-memory ShowcaseInfo cache. If any of these are missing, the
+        # row gets stored but never appears in dashboards.
+        rows.append({
+            "_key":        doc["id"],
+            "showcaseId":  doc["id"],
+            "channel":     CHANNEL,
+            "user":        "cicd",
+            "_time":       int(time.time()),
+            "json":        json.dumps(showcase, ensure_ascii=False),
+        })
         sys.stderr.write(f"ok: {os.path.relpath(path, root)} -> {doc['id']}\n")
 
     if failures:
