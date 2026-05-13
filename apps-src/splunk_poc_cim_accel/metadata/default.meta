@@ -1,0 +1,13 @@
+# Export all conf scopes from this app to the system level so the datamodel
+# acceleration overrides apply globally (not just when the app is in scope).
+[]
+export = system
+
+# Make the datamodel acceleration overrides readable by all roles.
+[datamodels]
+export = system
+access = read : [ * ], write : [ admin ]
+
+[views]
+export = system
+access = read : [ * ], write : [ admin ]

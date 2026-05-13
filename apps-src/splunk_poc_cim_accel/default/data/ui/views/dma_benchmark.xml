@@ -1,0 +1,139 @@
+<dashboard version="1.1" theme="dark">
+  <label>DMA Benchmark — tstats vs search</label>
+  <description>Side-by-side comparison of |tstats (accelerated datamodel) vs |search (raw events) on the same dataset, plus per-datamodel acceleration health. Demonstrates the latency win from Data Model Acceleration.</description>
+
+  <row>
+    <panel>
+      <title>Datamodel acceleration health</title>
+      <table>
+        <search>
+          <query>| rest /servicesNS/-/-/data/models splunk_server=local
+| search acceleration=1
+| eval datamodel = title
+| eval earliest_time = 'acceleration.earliest_time'
+| eval cron = 'acceleration.cron_schedule'
+| join type=outer datamodel [
+    | rest /servicesNS/-/-/admin/summarization splunk_server=local
+    | eval datamodel = mvindex(split(summary_id, "_"), -1)
+    | stats values(size) as bytes_summary values(access_count) as access_count
+      values(is_inprogress) as build_in_progress values(complete) as completeness
+      by datamodel
+  ]
+| eval size_mb = round(bytes_summary/1024/1024, 2)
+| eval completeness_pct = round(completeness*100, 1)
+| table datamodel earliest_time cron size_mb completeness_pct build_in_progress access_count
+| sort datamodel</query>
+          <earliest>-15m</earliest>
+          <latest>now</latest>
+        </search>
+        <option name="drilldown">none</option>
+      </table>
+    </panel>
+  </row>
+
+  <row>
+    <panel>
+      <title>|tstats over the Change datamodel — milliseconds</title>
+      <single>
+        <search>
+          <query>| tstats count from datamodel=Change where earliest=-24h
+| eval label = "events via tstats"</query>
+          <earliest>-15m</earliest>
+          <latest>now</latest>
+        </search>
+        <option name="drilldown">none</option>
+        <option name="numberPrecision">0</option>
+      </single>
+    </panel>
+    <panel>
+      <title>|search on raw events — seconds</title>
+      <single>
+        <search>
+          <query>search index=main sourcetype=aws:cloudtrail earliest=-24h
+| stats count</query>
+          <earliest>-15m</earliest>
+          <latest>now</latest>
+        </search>
+        <option name="drilldown">none</option>
+        <option name="numberPrecision">0</option>
+      </single>
+    </panel>
+  </row>
+
+  <row>
+    <panel>
+      <title>Top CloudTrail actions (Change datamodel, accelerated)</title>
+      <chart>
+        <search>
+          <query>| tstats count from datamodel=Change where earliest=-24h by Change.action, Change.object_category
+| sort -count
+| head 20</query>
+          <earliest>-15m</earliest>
+          <latest>now</latest>
+        </search>
+        <option name="charting.chart">bar</option>
+        <option name="charting.legend.placement">right</option>
+        <option name="drilldown">none</option>
+      </chart>
+    </panel>
+    <panel>
+      <title>Authentication events by action (accelerated)</title>
+      <chart>
+        <search>
+          <query>| tstats count from datamodel=Authentication where earliest=-24h by Authentication.action, Authentication.app
+| sort -count
+| head 20</query>
+          <earliest>-15m</earliest>
+          <latest>now</latest>
+        </search>
+        <option name="charting.chart">bar</option>
+        <option name="charting.legend.placement">right</option>
+        <option name="drilldown">none</option>
+      </chart>
+    </panel>
+  </row>
+
+  <row>
+    <panel>
+      <title>How to read this dashboard</title>
+      <html>
+        <body>
+          <h3>What you're looking at</h3>
+          <p>This POC enables Data Model Acceleration (DMA) on the
+          <b>Change</b> and <b>Authentication</b> CIM datamodels. Every 5 minutes
+          Splunk pre-summarizes the last 7 days of matching events into tsidx
+          files. <code>|tstats</code> reads those summary files directly,
+          skipping the raw-event scan that <code>|search</code> performs.</p>
+
+          <h3>Why DMA matters</h3>
+          <ul>
+            <li><b>Latency.</b> <code>|tstats</code> returns in tens of
+            milliseconds even over millions of events. <code>|search</code>
+            scales linearly with event volume.</li>
+            <li><b>Detections.</b> Splunk ES correlation searches and most
+            ESCU detections run as <code>|tstats</code>-style queries against
+            CIM datamodels. Without acceleration the detection schedule
+            falls behind real-time.</li>
+            <li><b>Cost.</b> Accelerated datamodels reduce search-head CPU
+            and search-peer disk I/O. The trade-off is index storage
+            (tsidx summaries are typically ~10–20% of raw event size).</li>
+          </ul>
+
+          <h3>Acceleration health interpretation</h3>
+          <ul>
+            <li><code>completeness_pct = 100</code> — summary build caught
+            up to head of data. Searches return full-accuracy results.</li>
+            <li><code>completeness_pct &lt; 100</code> — build still
+            backfilling. <code>|tstats summariesonly=t</code> will under-count;
+            <code>summariesonly=f</code> falls back to raw search for the
+            unsummarized window.</li>
+            <li><code>build_in_progress = 1</code> — a summary-build search
+            is running right now.</li>
+            <li><code>size_mb</code> — current on-disk size of the
+            tsidx summaries.</li>
+          </ul>
+        </body>
+      </html>
+    </panel>
+  </row>
+</dashboard>

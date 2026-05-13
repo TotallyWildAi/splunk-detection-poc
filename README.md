@@ -12,6 +12,8 @@ A self-contained Splunk detection-engineering POC demonstrating five capabilitie
 
 Splunk Enterprise (60-day trial) on a single EC2 instance in a private subnet of its own VPC. Browser access via a public Application Load Balancer terminating HTTPS with an AWS Certificate Manager cert; Cloudflare provides authoritative DNS only (DNS-only / grey-cloud CNAME to the ALB). Auth is Splunk's built-in admin login. CI/CD via GitHub Actions with OIDC-authenticated AWS access (no static keys).
 
+Data flows in via an account-wide multi-region CloudTrail → S3 → SQS event notifications → `Splunk_TA_aws` "SQS-Based S3" modular input → indexed as `sourcetype=aws:cloudtrail` into `index=main`. CIM datamodel acceleration is enabled for `Change` and `Authentication` so detection content (`tstats`-based) runs in milliseconds.
+
 ```
 splunk-detection-poc/
 ├── README.md
@@ -22,9 +24,14 @@ splunk-detection-poc/
 │   ├── modules/
 │   │   ├── vpc/               Dedicated VPC (10.2.0.0/16), 1 NAT GW, 2 public subnets (ALB), 1 private subnet
 │   │   ├── splunk/            EC2 + cloud-init Splunk install + EBS
-│   │   ├── alb/                Public ALB + ACM cert + Cloudflare DNS records
+│   │   ├── alb/               Public ALB + ACM cert + Cloudflare DNS records
+│   │   ├── cloudtrail_ingest/ CloudTrail trail + S3 bucket + SQS queue + S3->SQS notifications
 │   │   └── scheduler/         EventBridge schedule to start/stop EC2 (business hrs)
 │   └── envs/
+├── apps-src/                  First-party Splunk apps (versioned in git)
+│   └── splunk_poc_cim_accel/  CIM datamodel acceleration overrides + benchmark dashboard
+├── splunk-apps/               Third-party Splunkbase packages (.tgz/.spl, gitignored)
+├── scripts/sync-apps.sh       Builds .tgz from apps-src/, syncs all to S3, triggers install on EC2
 ├── detections/                Detection content (YAML + SPL), validated in CI
 ├── dashboards/                Splunk dashboards as code (XML / JSON)
 ├── docs/                      Demo walkthrough, runbooks
@@ -40,13 +47,34 @@ Build in progress. See the Phase status section once Phase 1 lands.
 
 | Phase | Description | Status |
 |-------|-------------|--------|
-| 1 | Skeleton + Splunk EC2 + ALB + HTTPS + ACM (Splunk native auth) + GH Actions OIDC + business-hours scheduler | Planned |
-| 2 | Data ingestion (CloudTrail, VPC Flow Logs, HEC examples) | Planned |
-| 3 | DMA: CIM datamodels with acceleration + benchmark dashboard | Planned |
-| 4 | 5-10 custom SPL detections + MITRE ATT&CK mapping | Planned |
-| 5 | Detections-as-Code CI/CD (lint → validate → unit-test → deploy) | Planned |
-| 6 | AI detection workflow (threat-intel → Claude → SPL draft → test) | Planned |
-| 7 | Demo polish (dashboards, README walkthrough) | Planned |
+| 1   | Skeleton + Splunk EC2 + ALB + HTTPS + ACM (Splunk native auth) + GH Actions OIDC + business-hours scheduler | Done |
+| 2.1 | CloudTrail → S3 → SQS → TA-aws ingestion | Done |
+| 2.2 | VPC Flow Logs ingestion | Planned |
+| 2.3 | GuardDuty findings ingestion | Planned |
+| 2.4 | HEC examples (synthetic auth-fail events) | Planned |
+| 3   | DMA: CIM datamodels (Change, Authentication) accelerated + benchmark dashboard | Done |
+| 4   | 5-10 custom SPL detections + MITRE ATT&CK mapping | Planned |
+| 5   | Detections-as-Code CI/CD (lint → validate → unit-test → deploy) | Planned |
+| 6   | AI detection workflow (threat-intel → Claude → SPL draft → test) | Planned |
+| 7   | Demo polish (dashboards, README walkthrough) | Planned |
+
+## Operational notes
+
+A few non-obvious gotchas surfaced during the build — captured here so they're not lost.
+
+**Terraform requires `CLOUDFLARE_API_TOKEN`** in shell for every `plan`/`apply`, even when the change you're making has nothing to do with DNS. The `alb` module owns `cloudflare_dns_record` resources (app CNAME + ACM validation records), so the Cloudflare provider refreshes them on every run. Export the token from your environment (or source `.env`).
+
+**TA-aws "Signature Validate All Events" must be UNCHECKED** when configuring the SQS-Based S3 input. Our S3 sends notifications directly to SQS (no SNS wrapping), so messages have no SNS signature. With validation on (the UI default), TA-aws silently drops every message. The input's stored attr is `sqs_sns_validation=0`. To toggle via REST:
+
+```bash
+curl -ks -u admin@totallywild.ai:$PW -X POST \
+  https://localhost:8089/servicesNS/nobody/Splunk_TA_aws/data/inputs/aws_sqs_based_s3/cloudtrail-mgmt \
+  -d 'sqs_sns_validation=0'
+```
+
+**TA-aws Configuration page crashes on first load** with `cannot unpack non-iterable NoneType object` because it ships without an initial `aws_account.conf`. Seed an empty `[default]` stanza in `/opt/splunk/etc/apps/Splunk_TA_aws/local/aws_account.conf` and restart Splunk.
+
+**Splunk 10.2.x boot-start requires careful ownership.** The `.deb` chowns `/opt/splunk` to `splunk:splunk`; running `splunk start --run-as-root` may leave new files root-owned. The systemd unit runs as `User=splunk`, so any root-owned files break the next stop/start cycle. `user_data.sh.tftpl` handles this by chowning back to `splunk:splunk` before enabling boot-start, and `install-apps.sh` re-chowns after each app install and uses `systemctl restart Splunkd` (not `splunk restart --run-as-root`).
 
 ## Cost (per env, ap-southeast-2, business hours schedule)
 

@@ -40,8 +40,10 @@ flowchart TB
                             ESCU["DA-ESS-ContentUpdate<br/>(ESCU detections)"]
                             SSE["Splunk_Security_Essentials<br/>(detection browser)"]
                             SAB["splunk-add-on-builder"]
+                            POCACCEL["splunk_poc_cim_accel<br/>(first-party · DMA on for<br/>Change + Authentication)"]
                             ESBOX["[Splunk Enterprise Security<br/>SplunkEnterpriseSecuritySuite]<br/>not deployed — license-gated"]
                         end
+                        TSIDX["tsidx summaries<br/>(built every 5 min<br/>from accelerated DMs)"]
                     end
                 end
             end
@@ -77,6 +79,9 @@ flowchart TB
     CTBUCKET -.->|"GetObject<br/>(after queue notify)"| TAWS
     TAWS --> SPL
     CIM -.->|datamodels populated by| SPL
+    POCACCEL -.->|"acceleration = 1<br/>on Change + Authentication<br/>(overrides CIM defaults)"| CIM
+    CIM -.->|"every 5 min:<br/>build summary search"| TSIDX
+    TSIDX -.->|"&#124;tstats reads<br/>summaries (ms)"| SPL
     ESCU -.->|detections run on| SPL
     SSE -.->|browses| ESCU
     ESBOX -.->|"<i>would consume CIM datamodels,<br/>run correlation searches,<br/>fire Notable Events"</i>| CIM
@@ -99,14 +104,17 @@ flowchart TB
     classDef ingestbox stroke:#4dabf7,fill:#1a2a3a,color:#fff;
 
     class ESBOX notDeployed
-    class CIM,TAWS,ESCU,SSE,SAB installed
+    class CIM,TAWS,ESCU,SSE,SAB,POCACCEL installed
     class SMADMIN,OIDC,ACM secret
     class CT,CTBUCKET,CTQUEUE ingestbox
+    class TSIDX accel
+    classDef accel stroke:#ffd43b,fill:#3a341a,color:#fff,stroke-width:2px;
 ```
 
 Legend:
 - **Green** boxes = apps actually installed on the running EC2
 - **Blue** boxes = data-ingestion plumbing (CloudTrail + S3 + SQS)
+- **Yellow** box = accelerated datamodel summaries (DMA tsidx files)
 - **Red dashed** box = where ES would slot in if licensed
 - **Dashed arrows** = data/config flow (vs solid for traffic)
 

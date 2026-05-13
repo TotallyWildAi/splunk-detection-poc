@@ -17,6 +17,7 @@ cd "$(dirname "$0")/.."
 REGION=${AWS_REGION:-ap-southeast-2}
 TF_DIR="terraform"
 APPS_DIR="splunk-apps"
+APPS_SRC_DIR="apps-src"
 
 if ! command -v terraform >/dev/null 2>&1; then
   echo "terraform CLI not found in PATH" >&2
@@ -40,14 +41,36 @@ echo "[sync-apps] instance: $INSTANCE_ID"
 echo "[sync-apps] region: $REGION"
 echo
 
-# Upload every supported package extension. --delete removes any files in S3
-# that aren't in the local dir, keeping the bucket a faithful mirror.
-echo "[sync-apps] uploading $APPS_DIR/ -> s3://$BUCKET/"
-aws s3 sync "$APPS_DIR/" "s3://$BUCKET/" \
-  --region "$REGION" \
-  --exclude '*' \
-  --include '*.tgz' --include '*.tar.gz' --include '*.spl' --include '*.zip' \
-  --delete
+# ─── Build .tgz from each subdir of apps-src/ ─────────────────────────
+# apps-src/ holds our own first-party Splunk apps (versioned in git as
+# unpacked directories). splunk-apps/ holds third-party .tgz/.spl files
+# downloaded from Splunkbase (gitignored, since they're large binaries).
+#
+# We stage everything into a tmp dir and `aws s3 sync --delete` from
+# there, so the bucket is a faithful mirror of both.
+STAGE=$(mktemp -d)
+trap 'rm -rf "$STAGE"' EXIT
+
+# Copy third-party packages (if any).
+shopt -s nullglob
+for f in "$APPS_DIR"/*.tgz "$APPS_DIR"/*.tar.gz "$APPS_DIR"/*.spl "$APPS_DIR"/*.zip; do
+  cp "$f" "$STAGE/"
+done
+shopt -u nullglob
+
+# Build .tgz for each first-party app under apps-src/.
+if [ -d "$APPS_SRC_DIR" ]; then
+  for d in "$APPS_SRC_DIR"/*/; do
+    [ -d "$d" ] || continue
+    name=$(basename "$d")
+    echo "[sync-apps] packaging $APPS_SRC_DIR/$name -> $name.tgz"
+    tar -czf "$STAGE/$name.tgz" -C "$APPS_SRC_DIR" "$name"
+  done
+fi
+
+echo
+echo "[sync-apps] uploading staged packages -> s3://$BUCKET/"
+aws s3 sync "$STAGE/" "s3://$BUCKET/" --region "$REGION" --delete
 
 echo
 echo "[sync-apps] triggering /opt/splunk-poc/install-apps.sh on $INSTANCE_ID"
