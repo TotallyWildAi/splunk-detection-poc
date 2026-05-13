@@ -55,8 +55,9 @@ splunk-detection-poc/
 │   ├── SCHEMA.md                 YAML format spec - fields, MITRE mapping, tests block
 │   └── aws/                      One file per detection, kebab-case
 └── docs/
-    └── splunk-enterprise-security-notes.md
-                                  ES capabilities / what this POC has vs lacks + Mermaid architecture diagram
+    ├── splunk-enterprise-security-notes.md
+    │                             ES capabilities / what this POC has vs lacks + Mermaid architecture diagram
+    └── disaster-recovery.md      DR runbook — terraform apply -replace + workflow re-run, verified 2026-05-13
 ```
 
 ## Phases
