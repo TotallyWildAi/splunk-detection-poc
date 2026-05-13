@@ -18,11 +18,19 @@
 # covering common security products; ours are AWS__CloudTrail and
 # AWS__VPC_Flow_Logs.
 
+# `eventtype_ids` is a pipe-delimited string of SSE-internal eventtype IDs
+# the product offers. The deploy uses this to populate the row's
+# `eventtypeId` field, which generateShowcaseInfo.py reads when building
+# its dsc_to_da_scores lookup. Including BOTH the VendorSpecific-* base
+# IDs AND the granular DSnnn-* IDs gives the widest match surface for
+# detection content's data_source_categories field.
 products:
   - product_id: AWS__CloudTrail
     sourcetype: aws:cloudtrail
     index: main
+    eventtype_ids: VendorSpecific-aws-cloudtrail|DS003Authentication-ET01Success|DS037Change-ET01Change|DS037Change-ET02ChangeAccount
 
   - product_id: AWS__VPC_Flow_Logs
     sourcetype: aws:cloudwatchlogs:vpcflow
     index: main
+    eventtype_ids: VendorSpecific-aws-vpcflow|DS010NetworkCommunication-ET01Traffic|DS010NetworkCommunication-ET01TrafficAllowed|DS010NetworkCommunication-ET01TrafficBlocked

@@ -56,6 +56,14 @@ def main() -> int:
             # next run; we set it as a sensible default.
             "coverage_level": "100",
         }
+        # eventtype_ids becomes the row's `eventtypeId` field, which
+        # generateShowcaseInfo.py reads at scoring time. Pipe-delimited
+        # list of SSE-internal eventtype IDs the product offers. Without
+        # this, AWS__CloudTrail re-discovered as a single VendorSpecific-*
+        # eventtype and our detections (which reference DSnnn-* eventtypes)
+        # fail to intersect with dsc_to_da_scores.
+        if "eventtype_ids" in prod:
+            patch["eventtypeId"] = prod["eventtype_ids"]
         # Optional helpers — sourcetype + index inform basesearch / termsearch
         # if SSE re-discovers later.
         if "sourcetype" in prod and "index" in prod:
