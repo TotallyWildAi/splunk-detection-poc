@@ -8,6 +8,113 @@ excluded to keep the POC cost-controlled.
 Here's a precise accounting of what that means, so the demo story doesn't
 oversell or undersell what's been built.
 
+## How it's deployed
+
+```mermaid
+flowchart TB
+    subgraph external["External"]
+        Browser([Browser<br/>anywhere])
+        IdP[SSO Identity Provider<br/>Google / GitHub / etc.]
+        GHA[GitHub Actions<br/>TotallyWildAi/splunk-detection-poc]
+        DataSources["AWS Data Sources<br/>CloudTrail · VPC Flow Logs<br/>GuardDuty · CloudWatch"]
+    end
+
+    subgraph cfedge["Cloudflare edge"]
+        CFAccess["Cloudflare Access<br/>SSO policy: cintelis.ai allowed"]
+        CFTunnel["Cloudflare Tunnel<br/>splunk-poc.totallywild.ai<br/>splunk-poc-hec.totallywild.ai"]
+    end
+
+    subgraph aws["AWS account 637675605233 · ap-southeast-2"]
+        subgraph vpc["VPC 10.2.0.0/16"]
+            subgraph pub["Public subnet 10.2.0.0/24"]
+                IGW[Internet Gateway]
+                NAT["NAT Gateway<br/>EIP"]
+            end
+            subgraph priv["Private subnet 10.2.1.0/24"]
+                subgraph ec2["EC2 m5.xlarge · Ubuntu 22.04"]
+                    subgraph dockerlayer["Docker"]
+                        CFD["cloudflared<br/>2026.3.0"]
+                    end
+                    subgraph splunklayer["Splunk Enterprise 10.2.3"]
+                        SPL["splunkd · :8000 web · :8088 HEC · :8089 mgmt"]
+                        subgraph apps["/opt/splunk/etc/apps/"]
+                            CIM["Splunk_SA_CIM<br/>(CIM datamodels)"]
+                            TAWS["Splunk_TA_aws<br/>(AWS ingestion)"]
+                            ESCU["DA-ESS-ContentUpdate<br/>(ESCU detections)"]
+                            SSE["Splunk_Security_Essentials<br/>(detection browser)"]
+                            SAB["splunk-add-on-builder"]
+                            ESBOX["[Splunk Enterprise Security<br/>SplunkEnterpriseSecuritySuite]<br/>not deployed — license-gated"]
+                        end
+                    end
+                end
+            end
+        end
+
+        subgraph awsmgmt["AWS managed services"]
+            S3APPS["S3: splunk-poc-apps-637675605233<br/>5 app .tgz/.tar.gz/.spl files"]
+            SMADMIN["Secrets Manager:<br/>splunk admin password"]
+            SMTUN["Secrets Manager:<br/>cloudflared tunnel token"]
+            SCHED["EventBridge Scheduler<br/>start 09:00 / stop 18:00 AEST"]
+            OIDC["IAM OIDC + splunk-poc-gha-deploy role"]
+            SSM["AWS Systems Manager<br/>(no SSH; Session Manager only)"]
+        end
+    end
+
+    Browser <-->|HTTPS| CFAccess
+    CFAccess <-->|challenge| IdP
+    CFAccess <-->|after auth| CFTunnel
+    CFTunnel <==>|outbound tunnel<br/>persistent| CFD
+    CFD -->|localhost:8000<br/>localhost:8088| SPL
+
+    DataSources -.->|"CloudTrail S3 / Flow Logs<br/>(via TA-aws SQS+S3 polling)"| TAWS
+    TAWS --> SPL
+    CIM -.->|datamodels populated by| SPL
+    ESCU -.->|detections run on| SPL
+    SSE -.->|browses| ESCU
+    ESBOX -.->|"<i>would consume CIM datamodels,<br/>run correlation searches,<br/>fire Notable Events"</i>| CIM
+
+    SCHED -->|StartInstances<br/>StopInstances| ec2
+    SMADMIN -.->|read at boot| SPL
+    SMTUN -.->|read at boot| CFD
+    S3APPS -.->|aws s3 sync<br/>+ splunk install app| apps
+
+    GHA -->|OIDC assume| OIDC
+    OIDC -->|terraform apply| aws
+
+    ec2 -->|egress via| NAT
+    NAT -->|internet| IGW
+
+    SSM <-.->|"Session Manager<br/>(maintenance access)"| ec2
+
+    classDef notDeployed stroke:#ff6b6b,stroke-width:2px,stroke-dasharray: 5 5,fill:#3a1a1a,color:#fff;
+    classDef installed stroke:#51cf66,fill:#1a3a1a,color:#fff;
+    classDef secret fill:#2a2a3a,color:#fff,stroke:#888;
+
+    class ESBOX notDeployed
+    class CIM,TAWS,ESCU,SSE,SAB installed
+    class SMADMIN,SMTUN,OIDC secret
+```
+
+Legend:
+- **Green** boxes = apps actually installed on the running EC2
+- **Red dashed** box = where ES would slot in if licensed
+- **Dashed arrows** = data/config flow (vs solid for traffic)
+
+### Where ES would fit, specifically
+
+ES is **not a separate VM or service** — it's just another Splunk app installed at `/opt/splunk/etc/apps/SplunkEnterpriseSecuritySuite/`, like the five apps we ship. Adding ES wouldn't change the VPC, EC2, Cloudflare Tunnel, or S3-deployment pipeline. Mechanically it would mean:
+
+1. Acquire an ES license SKU from Splunk
+2. Drop the ES `.spl` package into `splunk-apps/`
+3. `terraform apply` (uploads to S3 + `aws s3 sync` triggers re-install)
+4. Re-run `install-apps.sh` via SSM (or restart EC2)
+5. Apply the ES license through Splunk Web → Settings → Licensing
+6. Run the ES post-install setup wizard
+
+After that, ES would consume the **same CIM datamodels we already have** and re-publish the ESCU detections as correlation searches that fire **Notable Events** instead of plain alerts. RBA, Asset & Identity, Threat Intel, and Adaptive Response would all become available — all running on the same EC2, no infra changes.
+
+This is why the framing "the detections I wrote are ES-compatible, I just didn't pay for the license" is accurate: nothing in the deployment topology needs to move.
+
 ## What ES would add (NOT in this POC)
 
 | ES capability | What it is | Closest workaround in this POC |
