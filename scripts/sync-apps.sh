@@ -14,6 +14,24 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+# CLI flags
+#   --no-delete       skip `aws s3 sync --delete`, so existing objects in the
+#                     bucket aren't pruned. Use this in CI where the local
+#                     splunk-apps/ dir is empty (third-party Splunkbase
+#                     binaries are gitignored), otherwise the --delete would
+#                     wipe those binaries from the bucket.
+#   --custom-only     skip copying splunk-apps/*.tgz/*.spl/etc. into staging.
+#                     Use this in CI to only deploy first-party apps-src/.
+DELETE_FLAG="--delete"
+INCLUDE_THIRD_PARTY=1
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --no-delete)    DELETE_FLAG=""; shift ;;
+    --custom-only)  INCLUDE_THIRD_PARTY=0; shift ;;
+    *) echo "unknown arg: $1" >&2; exit 2 ;;
+  esac
+done
+
 REGION=${AWS_REGION:-ap-southeast-2}
 TF_DIR="terraform"
 APPS_DIR="splunk-apps"
@@ -51,12 +69,15 @@ echo
 STAGE=$(mktemp -d)
 trap 'rm -rf "$STAGE"' EXIT
 
-# Copy third-party packages (if any).
-shopt -s nullglob
-for f in "$APPS_DIR"/*.tgz "$APPS_DIR"/*.tar.gz "$APPS_DIR"/*.spl "$APPS_DIR"/*.zip; do
-  cp "$f" "$STAGE/"
-done
-shopt -u nullglob
+# Copy third-party packages (if any). Skipped when --custom-only is set
+# (CI mode — third-party binaries are gitignored and live only in the bucket).
+if [ "$INCLUDE_THIRD_PARTY" = "1" ]; then
+  shopt -s nullglob
+  for f in "$APPS_DIR"/*.tgz "$APPS_DIR"/*.tar.gz "$APPS_DIR"/*.spl "$APPS_DIR"/*.zip; do
+    cp "$f" "$STAGE/"
+  done
+  shopt -u nullglob
+fi
 
 # Build .tgz for each first-party app under apps-src/.
 if [ -d "$APPS_SRC_DIR" ]; then
@@ -70,7 +91,7 @@ fi
 
 echo
 echo "[sync-apps] uploading staged packages -> s3://$BUCKET/"
-aws s3 sync "$STAGE/" "s3://$BUCKET/" --region "$REGION" --delete
+aws s3 sync "$STAGE/" "s3://$BUCKET/" --region "$REGION" $DELETE_FLAG
 
 echo
 echo "[sync-apps] triggering /opt/splunk-poc/install-apps.sh on $INSTANCE_ID"

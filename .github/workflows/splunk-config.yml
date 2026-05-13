@@ -1,0 +1,139 @@
+name: splunk-config
+
+# Detections-as-Code pipeline. Triggers only when first-party Splunk content
+# changes — no terraform plan/apply, no infra churn. Run order:
+#   1. Validate YAML detection content + lint app .conf files.
+#   2. (PR) Stop here — we don't deploy from PRs.
+#   3. (main push) Build + sync first-party apps to S3, SSM-trigger
+#      install-apps.sh on the Splunk EC2 to (re)install them, restart Splunk.
+#
+# Phase 5 (Detections-as-Code REST deploy) will extend this workflow with
+# a `deploy-detections` job that compiles detections/*.yml into Splunk
+# saved-search REST payloads and POSTs them through an SSM-tunnelled
+# connection to the splunkd management port (no public 8089 exposure).
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - apps-src/**
+      - detections/**
+      - scripts/sync-apps.sh
+      - .github/workflows/splunk-config.yml
+  push:
+    branches: [main]
+    paths:
+      - apps-src/**
+      - detections/**
+      - scripts/sync-apps.sh
+      - .github/workflows/splunk-config.yml
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate detection YAML files
+        run: |
+          set -euo pipefail
+          if [ -d detections ]; then
+            # Every .yml under detections/ must parse and have the required
+            # top-level keys. Lightweight schema check — full SCHEMA.md
+            # conformance lands in Phase 5 with the deploy compiler.
+            python3 - <<'PY'
+          import sys, glob, yaml
+          required = {"id","name","version","author","date","description","type","search","tags"}
+          fail = False
+          for path in sorted(glob.glob("detections/**/*.yml", recursive=True)):
+              try:
+                  with open(path) as f:
+                      doc = yaml.safe_load(f)
+              except Exception as e:
+                  print(f"::error file={path}::YAML parse failed: {e}")
+                  fail = True
+                  continue
+              missing = required - set(doc.keys())
+              if missing:
+                  print(f"::error file={path}::missing required fields: {sorted(missing)}")
+                  fail = True
+                  continue
+              print(f"ok: {path}")
+          sys.exit(1 if fail else 0)
+          PY
+          else
+            echo "no detections/ dir yet — skipping"
+          fi
+
+      - name: Validate Splunk app .conf syntax (best-effort)
+        run: |
+          set -euo pipefail
+          # Splunk's btool isn't available without an install. We do a
+          # cheap consistency check: every [stanza] is unique within a file,
+          # no stray BOMs, line endings are LF.
+          python3 - <<'PY'
+          import sys, glob, re
+          fail = False
+          for path in sorted(glob.glob("apps-src/**/*.conf", recursive=True)):
+              with open(path, "rb") as f:
+                  raw = f.read()
+              if raw.startswith(b"\xef\xbb\xbf"):
+                  print(f"::error file={path}::UTF-8 BOM detected (Splunk .conf must be plain ASCII/UTF-8 without BOM)")
+                  fail = True
+              if b"\r\n" in raw:
+                  print(f"::warning file={path}::CRLF line endings detected — Splunk prefers LF")
+              stanzas = re.findall(r"^\[([^\]]+)\]", raw.decode("utf-8", errors="replace"), re.MULTILINE)
+              dupes = {s for s in stanzas if stanzas.count(s) > 1}
+              if dupes:
+                  print(f"::error file={path}::duplicate stanzas: {sorted(dupes)}")
+                  fail = True
+              print(f"ok: {path}")
+          sys.exit(1 if fail else 0)
+          PY
+
+  deploy-apps:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    needs: validate
+    environment: test
+    env:
+      AWS_REGION: ap-southeast-2
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ap-southeast-2
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.10.x
+
+      - name: Materialize backend config (read-only outputs fetch)
+        # sync-apps.sh calls `terraform output -raw` to discover the apps
+        # bucket + Splunk EC2 ID. We init against the remote backend but
+        # don't plan/apply — this job never touches infra.
+        run: |
+          cat > envs/test.backend.hcl <<EOF
+          bucket       = "twai-swarm-tfstate-637675605233"
+          key          = "splunk-detection-poc/test/terraform.tfstate"
+          region       = "ap-southeast-2"
+          use_lockfile = true
+          encrypt      = true
+          EOF
+
+      - run: terraform init -backend-config=../envs/test.backend.hcl
+        working-directory: terraform
+
+      - name: Build + sync first-party Splunk apps + trigger install
+        # --custom-only: don't copy third-party Splunkbase binaries (gitignored;
+        #                not on the CI runner).
+        # --no-delete:   don't prune objects from the bucket — third-party
+        #                packages live there permanently, only the EC2's
+        #                install-apps.sh decides what's installed.
+        run: bash scripts/sync-apps.sh --custom-only --no-delete
