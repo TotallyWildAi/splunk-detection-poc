@@ -137,3 +137,40 @@ jobs:
         #                packages live there permanently, only the EC2's
         #                install-apps.sh decides what's installed.
         run: bash scripts/sync-apps.sh --custom-only --no-delete
+
+  deploy-sse-content:
+    # Compiles detections/*.yml into SSE Custom Content ShowcaseInfo rows
+    # and writes them into the `custom_content` KV-store collection on the
+    # live Splunk EC2 via SSM (no public 8089 exposure). After this job
+    # runs, our 7 detections appear in the SSE MITRE ATT&CK heat map
+    # alongside ESCU's content, filterable by Originating App.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    needs: deploy-apps
+    environment: test
+    env:
+      AWS_REGION: ap-southeast-2
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ap-southeast-2
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.10.x
+      - name: Materialize backend config
+        run: |
+          cat > envs/test.backend.hcl <<EOF
+          bucket       = "twai-swarm-tfstate-637675605233"
+          key          = "splunk-detection-poc/test/terraform.tfstate"
+          region       = "ap-southeast-2"
+          use_lockfile = true
+          encrypt      = true
+          EOF
+      - run: terraform init -backend-config=../envs/test.backend.hcl
+        working-directory: terraform
+      - name: Install PyYAML for the compiler
+        run: pip install pyyaml
+      - name: Compile detections + push to SSE custom_content
+        run: bash scripts/deploy-sse-custom-content.sh
