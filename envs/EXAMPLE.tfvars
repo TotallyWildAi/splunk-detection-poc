@@ -7,15 +7,17 @@
 #   terraform apply -var-file=../envs/<env>.tfvars
 #
 # CLOUDFLARE_API_TOKEN must be exported before `terraform plan` / `terraform apply`.
-# Token scope: Account → Cloudflare Tunnel: Edit, Access: Apps and Policies: Edit;
-# Zone → DNS: Edit on the target zone.
+# Token scope: Zone → DNS: Edit on the target zone (DNS-only — no Tunnel /
+# Access scopes needed after the ALB refactor).
 
 # ---- Required (AWS) ----
-aws_region          = "ap-southeast-2"
-vpc_cidr            = "10.2.0.0/16"
-availability_zone   = "ap-southeast-2a"
-public_subnet_cidr  = "10.2.0.0/24"
-private_subnet_cidr = "10.2.1.0/24"
+aws_region           = "ap-southeast-2"
+vpc_cidr             = "10.2.0.0/16"
+availability_zone    = "ap-southeast-2a"
+availability_zone_b  = "ap-southeast-2b"
+public_subnet_cidr   = "10.2.0.0/24"
+public_subnet_b_cidr = "10.2.2.0/24"
+private_subnet_cidr  = "10.2.1.0/24"
 
 # ---- Splunk EC2 ----
 splunk_instance_type       = "m5.xlarge"
@@ -24,18 +26,10 @@ splunk_admin_email         = "admin@example.com"
 # splunk_deb_url           = "https://download.splunk.com/products/splunk/releases/10.2.3/linux/splunk-10.2.3-4d61cf8a5c0c-linux-amd64.deb"
 # splunk_version           = "10.2.3"
 
-# ---- Required (Cloudflare) ----
-cloudflare_account_id = "0000000000000000000000000000000000"
-cloudflare_zone_id    = "0000000000000000000000000000000000"
-cloudflare_zone_name  = "example.com"
-splunk_web_hostname   = "splunk-poc.example.com"
-splunk_hec_hostname   = "splunk-poc-hec.example.com"
-
-access_allowed_emails            = ["you@example.com"]
-# access_allowed_idp_ids           = ["<idp-id>"]
-# access_auto_redirect_to_identity = true
-# access_application_name          = "Splunk Detection POC"
-# access_policy_name               = "Splunk Detection POC"
+# ---- Required (Cloudflare DNS — used for the ALB CNAME + ACM validation) ----
+cloudflare_zone_id   = "0000000000000000000000000000000000"
+cloudflare_zone_name = "example.com"
+splunk_web_hostname  = "splunk-poc.example.com"
 
 # ---- Scheduler (business hours start/stop) ----
 # scheduler_enabled  = true

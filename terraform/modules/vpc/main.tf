@@ -1,6 +1,11 @@
-# Single-AZ VPC for the Splunk POC. Public subnet for NAT + IGW, private
-# subnet for the Splunk EC2 instance. S3 gateway endpoint (free) so package
-# pulls and any future S3-backed indexer storage don't traverse the NAT.
+# VPC for the Splunk POC.
+#
+# - Two public subnets (different AZs) so the ALB satisfies its multi-AZ
+#   requirement. NAT GW and Splunk compute still live in AZ-A; AZ-B's public
+#   subnet exists purely for ALB ENI placement.
+# - One private subnet (AZ-A) for the Splunk EC2 instance.
+# - S3 gateway endpoint (free) so package pulls and any future S3-backed
+#   indexer storage don't traverse the NAT.
 
 resource "aws_vpc" "this" {
   cidr_block           = var.vpc_cidr
@@ -29,7 +34,19 @@ resource "aws_subnet" "public" {
   map_public_ip_on_launch = true
 
   tags = merge(var.tags, {
-    Name = "${var.name_prefix}-public"
+    Name = "${var.name_prefix}-public-a"
+    Tier = "public"
+  })
+}
+
+resource "aws_subnet" "public_b" {
+  vpc_id                  = aws_vpc.this.id
+  cidr_block              = var.public_subnet_b_cidr
+  availability_zone       = var.availability_zone_b
+  map_public_ip_on_launch = true
+
+  tags = merge(var.tags, {
+    Name = "${var.name_prefix}-public-b"
     Tier = "public"
   })
 }
@@ -86,6 +103,11 @@ resource "aws_route_table" "public" {
 
 resource "aws_route_table_association" "public" {
   subnet_id      = aws_subnet.public.id
+  route_table_id = aws_route_table.public.id
+}
+
+resource "aws_route_table_association" "public_b" {
+  subnet_id      = aws_subnet.public_b.id
   route_table_id = aws_route_table.public.id
 }
 

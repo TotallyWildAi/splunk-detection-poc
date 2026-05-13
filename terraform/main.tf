@@ -15,32 +15,13 @@ provider "cloudflare" {}
 module "vpc" {
   source = "./modules/vpc"
 
-  name_prefix         = local.name_prefix
-  vpc_cidr            = var.vpc_cidr
-  availability_zone   = var.availability_zone
-  public_subnet_cidr  = var.public_subnet_cidr
-  private_subnet_cidr = var.private_subnet_cidr
-
-  tags = local.common_tags
-}
-
-module "cloudflared" {
-  source = "./modules/cloudflared"
-
-  name_prefix = local.name_prefix
-
-  cloudflare_account_id            = var.cloudflare_account_id
-  cloudflare_zone_id               = var.cloudflare_zone_id
-  splunk_web_hostname              = var.splunk_web_hostname
-  splunk_hec_hostname              = var.splunk_hec_hostname
-  splunk_web_internal_url          = "http://${module.splunk.private_ip}:8000"
-  splunk_hec_internal_url          = "http://${module.splunk.private_ip}:8088"
-  access_allowed_email_domains     = var.access_allowed_email_domains
-  access_allowed_emails            = var.access_allowed_emails
-  access_allowed_idp_ids           = var.access_allowed_idp_ids
-  access_auto_redirect_to_identity = var.access_auto_redirect_to_identity
-  access_application_name          = var.access_application_name
-  access_policy_name               = var.access_policy_name
+  name_prefix          = local.name_prefix
+  vpc_cidr             = var.vpc_cidr
+  availability_zone    = var.availability_zone
+  availability_zone_b  = var.availability_zone_b
+  public_subnet_cidr   = var.public_subnet_cidr
+  public_subnet_b_cidr = var.public_subnet_b_cidr
+  private_subnet_cidr  = var.private_subnet_cidr
 
   tags = local.common_tags
 }
@@ -48,27 +29,40 @@ module "cloudflared" {
 module "splunk" {
   source = "./modules/splunk"
 
-  name_prefix             = local.name_prefix
-  aws_region              = var.aws_region
-  vpc_id                  = module.vpc.vpc_id
-  private_subnet_id       = module.vpc.private_subnet_id
-  instance_type           = var.splunk_instance_type
-  root_volume_size_gb     = var.splunk_root_volume_size_gb
-  splunk_admin_email      = var.splunk_admin_email
-  splunk_deb_url          = var.splunk_deb_url
-  splunk_version          = var.splunk_version
-  cloudflared_image       = var.cloudflared_image
-  tunnel_token_secret_arn = module.cloudflared.tunnel_token_secret_arn
-  instance_profile_name   = aws_iam_instance_profile.splunk_ec2.name
-  apps_s3_bucket          = aws_s3_bucket.splunk_apps.bucket
+  name_prefix           = local.name_prefix
+  aws_region            = var.aws_region
+  vpc_id                = module.vpc.vpc_id
+  private_subnet_id     = module.vpc.private_subnet_id
+  instance_type         = var.splunk_instance_type
+  root_volume_size_gb   = var.splunk_root_volume_size_gb
+  splunk_admin_email    = var.splunk_admin_email
+  splunk_deb_url        = var.splunk_deb_url
+  splunk_version        = var.splunk_version
+  instance_profile_name = aws_iam_instance_profile.splunk_ec2.name
+  apps_s3_bucket        = aws_s3_bucket.splunk_apps.bucket
 
   tags = local.common_tags
 
-  # The EC2 cloud-init script needs internet (apt update, splunk download,
-  # docker pulls). Without this dependency Terraform can race ahead and create
-  # the EC2 before the NAT Gateway + private route table association are
-  # ready, and cloud-init fails on apt-get with "Network is unreachable".
+  # The EC2 cloud-init script needs internet (apt update, splunk download).
+  # Without this dependency Terraform can race ahead and create the EC2
+  # before the NAT Gateway + private route table association are ready, and
+  # cloud-init fails on apt-get with "Network is unreachable".
   depends_on = [module.vpc]
+}
+
+module "alb" {
+  source = "./modules/alb"
+
+  name_prefix        = local.name_prefix
+  vpc_id             = module.vpc.vpc_id
+  public_subnet_ids  = [module.vpc.public_subnet_id, module.vpc.public_subnet_id_b]
+  vpc_cidr           = var.vpc_cidr
+  splunk_instance_id = module.splunk.instance_id
+  splunk_sg_id       = module.splunk.security_group_id
+  hostname           = var.splunk_web_hostname
+  cloudflare_zone_id = var.cloudflare_zone_id
+
+  tags = local.common_tags
 }
 
 module "scheduler" {

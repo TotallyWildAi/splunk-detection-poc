@@ -14,27 +14,24 @@ oversell or undersell what's been built.
 flowchart TB
     subgraph external["External"]
         Browser([Browser<br/>anywhere])
-        IdP[SSO Identity Provider<br/>Google / GitHub / etc.]
         GHA[GitHub Actions<br/>TotallyWildAi/splunk-detection-poc]
         DataSources["AWS Data Sources<br/>CloudTrail · VPC Flow Logs<br/>GuardDuty · CloudWatch"]
-    end
-
-    subgraph cfedge["Cloudflare edge"]
-        CFAccess["Cloudflare Access<br/>SSO policy: cintelis.ai allowed"]
-        CFTunnel["Cloudflare Tunnel<br/>splunk-poc.totallywild.ai<br/>splunk-poc-hec.totallywild.ai"]
+        CFDNS["Cloudflare DNS<br/>splunk-poc.totallywild.ai<br/>(CNAME, unproxied)"]
     end
 
     subgraph aws["AWS account 637675605233 · ap-southeast-2"]
         subgraph vpc["VPC 10.2.0.0/16"]
-            subgraph pub["Public subnet 10.2.0.0/24"]
+            subgraph puba["Public subnet AZ-a 10.2.0.0/24"]
                 IGW[Internet Gateway]
                 NAT["NAT Gateway<br/>EIP"]
+                ALBA["ALB ENI (a)"]
             end
+            subgraph pubb["Public subnet AZ-b 10.2.2.0/24"]
+                ALBB["ALB ENI (b)"]
+            end
+            ALB["Application Load Balancer<br/>splunk-poc-alb · :443 HTTPS<br/>ACM cert"]
             subgraph priv["Private subnet 10.2.1.0/24"]
                 subgraph ec2["EC2 m5.xlarge · Ubuntu 22.04"]
-                    subgraph dockerlayer["Docker"]
-                        CFD["cloudflared<br/>2026.3.0"]
-                    end
                     subgraph splunklayer["Splunk Enterprise 10.2.3"]
                         SPL["splunkd · :8000 web · :8088 HEC · :8089 mgmt"]
                         subgraph apps["/opt/splunk/etc/apps/"]
@@ -51,20 +48,21 @@ flowchart TB
         end
 
         subgraph awsmgmt["AWS managed services"]
+            ACM["ACM certificate<br/>splunk-poc.totallywild.ai<br/>DNS-validated"]
             S3APPS["S3: splunk-poc-apps-637675605233<br/>5 app .tgz/.tar.gz/.spl files"]
             SMADMIN["Secrets Manager:<br/>splunk admin password"]
-            SMTUN["Secrets Manager:<br/>cloudflared tunnel token"]
             SCHED["EventBridge Scheduler<br/>start 09:00 / stop 18:00 AEST"]
             OIDC["IAM OIDC + splunk-poc-gha-deploy role"]
             SSM["AWS Systems Manager<br/>(no SSH; Session Manager only)"]
         end
     end
 
-    Browser <-->|HTTPS| CFAccess
-    CFAccess <-->|challenge| IdP
-    CFAccess <-->|after auth| CFTunnel
-    CFTunnel <==>|outbound tunnel<br/>persistent| CFD
-    CFD -->|localhost:8000<br/>localhost:8088| SPL
+    Browser -->|HTTPS| CFDNS
+    CFDNS -->|CNAME resolves to| ALB
+    ALB --> ALBA
+    ALB --> ALBB
+    ALB -->|target group :8000<br/>health check /en-US/account/login| SPL
+    ACM -.->|TLS cert attached| ALB
 
     DataSources -.->|"CloudTrail S3 / Flow Logs<br/>(via TA-aws SQS+S3 polling)"| TAWS
     TAWS --> SPL
@@ -74,8 +72,7 @@ flowchart TB
     ESBOX -.->|"<i>would consume CIM datamodels,<br/>run correlation searches,<br/>fire Notable Events"</i>| CIM
 
     SCHED -->|StartInstances<br/>StopInstances| ec2
-    SMADMIN -.->|read at boot| SPL
-    SMTUN -.->|read at boot| CFD
+    SMADMIN -.->|read at boot for<br/>Splunk login| SPL
     S3APPS -.->|aws s3 sync<br/>+ splunk install app| apps
 
     GHA -->|OIDC assume| OIDC
@@ -92,7 +89,7 @@ flowchart TB
 
     class ESBOX notDeployed
     class CIM,TAWS,ESCU,SSE,SAB installed
-    class SMADMIN,SMTUN,OIDC secret
+    class SMADMIN,OIDC,ACM secret
 ```
 
 Legend:
@@ -100,9 +97,11 @@ Legend:
 - **Red dashed** box = where ES would slot in if licensed
 - **Dashed arrows** = data/config flow (vs solid for traffic)
 
+Auth: Splunk's built-in admin login (`admin@totallywild.ai` + password from Secrets Manager). No SSO layer — for the POC, this is sufficient. For production, layer Cloudflare Access or AWS Cognito in front of the ALB.
+
 ### Where ES would fit, specifically
 
-ES is **not a separate VM or service** — it's just another Splunk app installed at `/opt/splunk/etc/apps/SplunkEnterpriseSecuritySuite/`, like the five apps we ship. Adding ES wouldn't change the VPC, EC2, Cloudflare Tunnel, or S3-deployment pipeline. Mechanically it would mean:
+ES is **not a separate VM or service** — it's just another Splunk app installed at `/opt/splunk/etc/apps/SplunkEnterpriseSecuritySuite/`, like the five apps we ship. Adding ES wouldn't change the VPC, EC2, ALB, or S3-deployment pipeline. Mechanically it would mean:
 
 1. Acquire an ES license SKU from Splunk
 2. Drop the ES `.spl` package into `splunk-apps/`

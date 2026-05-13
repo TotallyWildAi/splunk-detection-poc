@@ -9,7 +9,7 @@ output "instance_arn" {
 }
 
 output "private_ip" {
-  description = "Private IP of the Splunk EC2 — referenced by the cloudflared tunnel ingress config."
+  description = "Private IP of the Splunk EC2 (reachable only from inside the VPC)."
   value       = aws_instance.splunk.private_ip
 }
 

@@ -3,7 +3,8 @@
 # - Ubuntu 22.04 LTS (Canonical owner ID 099720109477)
 # - Private subnet, no public IP
 # - SSM Session Manager only (no SSH key pair)
-# - cloudflared runs as a Docker sidecar in user-data, fronts ports 8000+8088
+# - Splunk Web (8000) is fronted by a public ALB (see modules/alb); the ALB
+#   module adds the SG ingress rule allowing :8000 from the ALB SG
 # - Admin password materialized from Secrets Manager at first boot
 
 data "aws_ami" "ubuntu_2204" {
@@ -32,20 +33,21 @@ data "aws_ami" "ubuntu_2204" {
 }
 
 # ─── Security group ───────────────────────────────────────────────────
-# All ingress from the public internet is blocked (no public IP anyway).
-# cloudflared reaches Splunk over localhost on the same host, so we don't
-# need any ingress rules. Egress is wide-open: package mirrors, Cloudflare
-# edge, Splunk download, Secrets Manager API, SSM endpoints, etc.
+# Ingress from the ALB on :8000 is added externally by modules/alb as an
+# aws_vpc_security_group_ingress_rule referencing the ALB SG, so the splunk
+# module doesn't need to know the ALB SG ID (avoids a circular module dep).
+# Egress is wide-open: package mirrors, Splunk download, Secrets Manager
+# API, SSM endpoints, etc.
 resource "aws_security_group" "splunk" {
   name        = "${var.name_prefix}-splunk"
-  description = "Splunk Enterprise EC2 (egress-only; cloudflared sidecar reaches Splunk on localhost)"
+  description = "Splunk Enterprise EC2 (ALB module adds :8000 ingress from the ALB SG)"
   vpc_id      = var.vpc_id
   tags        = merge(var.tags, { Name = "${var.name_prefix}-splunk" })
 }
 
 resource "aws_vpc_security_group_egress_rule" "all" {
   security_group_id = aws_security_group.splunk.id
-  description       = "Allow all egress (Splunk download, package mirrors, Cloudflare edge, SSM endpoints)"
+  description       = "Allow all egress (Splunk download, package mirrors, Secrets Manager, SSM endpoints)"
   ip_protocol       = "-1"
   cidr_ipv4         = "0.0.0.0/0"
 }
@@ -56,9 +58,7 @@ locals {
     splunk_admin_email        = var.splunk_admin_email
     splunk_deb_url            = var.splunk_deb_url
     admin_password_secret_arn = aws_secretsmanager_secret.admin.arn
-    tunnel_token_secret_arn   = var.tunnel_token_secret_arn
     aws_region                = var.aws_region
-    cloudflared_image         = var.cloudflared_image
     apps_s3_bucket            = var.apps_s3_bucket
   })
 }
@@ -97,8 +97,8 @@ resource "aws_instance" "splunk" {
     SplunkVersion = var.splunk_version
   })
 
-  # Ensure the admin secret + tunnel token secret values are written before
-  # the instance boots and cloud-init tries to read them.
+  # Ensure the admin secret value is written before the instance boots and
+  # cloud-init tries to read it.
   depends_on = [
     aws_secretsmanager_secret_version.admin,
   ]

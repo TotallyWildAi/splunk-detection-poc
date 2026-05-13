@@ -43,16 +43,6 @@ variable "splunk_version" {
   type        = string
 }
 
-variable "cloudflared_image" {
-  description = "cloudflared Docker image (pinned)."
-  type        = string
-}
-
-variable "tunnel_token_secret_arn" {
-  description = "Secrets Manager ARN holding the Cloudflare Tunnel token."
-  type        = string
-}
-
 variable "instance_profile_name" {
   description = "IAM instance profile name. Passed in from the root module so the secrets policy can be co-located with the role definition."
   type        = string

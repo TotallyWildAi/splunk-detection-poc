@@ -10,7 +10,7 @@ A self-contained Splunk detection-engineering POC demonstrating five capabilitie
 
 ## Architecture
 
-Splunk Enterprise (60-day trial) on a single EC2 instance in its own VPC. Browser access via Cloudflare Tunnel + Cloudflare Access SSO — no public IP, no inbound firewall rules. CI/CD via GitHub Actions with OIDC-authenticated AWS access (no static keys).
+Splunk Enterprise (60-day trial) on a single EC2 instance in a private subnet of its own VPC. Browser access via a public Application Load Balancer terminating HTTPS with an AWS Certificate Manager cert; Cloudflare provides authoritative DNS only (DNS-only / grey-cloud CNAME to the ALB). Auth is Splunk's built-in admin login. CI/CD via GitHub Actions with OIDC-authenticated AWS access (no static keys).
 
 ```
 splunk-detection-poc/
@@ -20,9 +20,9 @@ splunk-detection-poc/
 ├── .github/workflows/         GH Actions — terraform + detection deploy
 ├── terraform/                 IaC root + modules
 │   ├── modules/
-│   │   ├── vpc/               Dedicated VPC (10.2.0.0/16), 1 NAT GW, single AZ
+│   │   ├── vpc/               Dedicated VPC (10.2.0.0/16), 1 NAT GW, 2 public subnets (ALB), 1 private subnet
 │   │   ├── splunk/            EC2 + cloud-init Splunk install + EBS
-│   │   ├── cloudflared/       Tunnel + Access app (mirrors agent-observability)
+│   │   ├── alb/                Public ALB + ACM cert + Cloudflare DNS records
 │   │   └── scheduler/         EventBridge schedule to start/stop EC2 (business hrs)
 │   └── envs/
 ├── detections/                Detection content (YAML + SPL), validated in CI
@@ -40,7 +40,7 @@ Build in progress. See the Phase status section once Phase 1 lands.
 
 | Phase | Description | Status |
 |-------|-------------|--------|
-| 1 | Skeleton + Splunk EC2 + Cloudflare Tunnel + GH Actions OIDC + business-hours scheduler | Planned |
+| 1 | Skeleton + Splunk EC2 + ALB + HTTPS + ACM (Splunk native auth) + GH Actions OIDC + business-hours scheduler | Planned |
 | 2 | Data ingestion (CloudTrail, VPC Flow Logs, HEC examples) | Planned |
 | 3 | DMA: CIM datamodels with acceleration + benchmark dashboard | Planned |
 | 4 | 5-10 custom SPL detections + MITRE ATT&CK mapping | Planned |
@@ -56,9 +56,11 @@ Build in progress. See the Phase status section once Phase 1 lands.
 | EBS storage (200 GB gp3) | ~$16 |
 | NAT Gateway (1, business hours stop optional) | ~$10–33 |
 | EventBridge + Lambda (scheduler) | <$1 |
-| Cloudflare Tunnel + Access (free tier) | $0 |
+| ALB (always-on, low traffic) | ~$18 |
+| ACM certificate (public, DNS-validated) | $0 |
+| Cloudflare DNS (authoritative-only) | $0 |
 | S3 + CloudWatch Logs + KMS | ~$2 |
-| **Total** | **~$50–80/mo** |
+| **Total** | **~$70–100/mo** |
 
 24/7 mode adds ~$100/mo for full Splunk uptime.
 

@@ -1,15 +1,14 @@
 #!/usr/bin/env bash
 # Splunk POC cloud-init.
-# Provisions a single-host Splunk Enterprise install + a cloudflared sidecar
-# Docker container that fronts Splunk Web (8000) and HEC (8088).
+# Provisions a single-host Splunk Enterprise install. Splunk Web (8000) is
+# fronted by an external public ALB (see terraform/modules/alb); this script
+# only installs and starts Splunk on the host.
 #
 # Templated by Terraform (templatefile()) with:
 #   ${splunk_admin_email}            Splunk admin username (email).
 #   ${splunk_deb_url}                Pinned Splunk .deb download URL.
 #   ${admin_password_secret_arn}     Secrets Manager ARN for the admin pw.
-#   ${tunnel_token_secret_arn}       Secrets Manager ARN for the tunnel token.
 #   ${aws_region}                    Region for the secretsmanager calls.
-#   ${cloudflared_image}             cloudflared Docker image, pinned.
 #   ${apps_s3_bucket}                S3 bucket holding Splunk app packages.
 
 set -euxo pipefail
@@ -20,7 +19,7 @@ echo "[bootstrap] start $(date -Is)"
 # ─── Packages ──────────────────────────────────────────────────────────
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
-apt-get install -y wget curl ca-certificates gnupg unzip docker.io
+apt-get install -y wget curl ca-certificates gnupg unzip
 
 # AWS CLI v2 (the apt awscli on 22.04 is v1; Splunk doesn't care, but v2 is
 # the contemporary standard).
@@ -34,17 +33,10 @@ if ! command -v aws >/dev/null 2>&1 || ! aws --version 2>&1 | grep -q "aws-cli/2
   rm -rf "$TMPD"
 fi
 
-systemctl enable --now docker
-
 # ─── Pull secrets from Secrets Manager ─────────────────────────────────
 SPLUNK_PASSWORD="$(aws secretsmanager get-secret-value \
   --region '${aws_region}' \
   --secret-id '${admin_password_secret_arn}' \
-  --query SecretString --output text)"
-
-TUNNEL_TOKEN="$(aws secretsmanager get-secret-value \
-  --region '${aws_region}' \
-  --secret-id '${tunnel_token_secret_arn}' \
   --query SecretString --output text)"
 
 # ─── Download + install Splunk Enterprise ─────────────────────────────
@@ -69,7 +61,7 @@ chmod 600 /opt/splunk/etc/system/local/user-seed.conf
 
 # Accept the license + enable boot-start as the splunk user. This also starts
 # splunkd, which on first boot consumes user-seed.conf.
-/opt/splunk/bin/splunk start --accept-license --answer-yes --no-prompt --seed-passwd "$${SPLUNK_PASSWORD}"
+/opt/splunk/bin/splunk start --accept-license --answer-yes --no-prompt --seed-passwd "$${SPLUNK_PASSWORD}" --run-as-root
 /opt/splunk/bin/splunk enable boot-start -user splunk -systemd-managed 1 --accept-license --answer-yes --no-prompt
 
 # ─── Enable HEC (HTTP Event Collector) ─────────────────────────────────
@@ -86,6 +78,7 @@ done
 /opt/splunk/bin/splunk http-event-collector enable \
   -uri https://localhost:8089 \
   -auth "${splunk_admin_email}:$${SPLUNK_PASSWORD}" \
+  --run-as-root \
   || echo "[bootstrap] HEC enable returned non-zero (may already be enabled)"
 
 # ─── Splunk app packages from S3 ───────────────────────────────────────
@@ -134,7 +127,7 @@ shopt -s nullglob
 INSTALLED_ANY=0
 for f in "$STAGE"/*.tgz "$STAGE"/*.tar.gz "$STAGE"/*.spl "$STAGE"/*.zip; do
   echo "[install-apps] installing $f"
-  /opt/splunk/bin/splunk install app "$f" -auth "$ADMIN_USER:$PW" -update true 2>&1 \
+  /opt/splunk/bin/splunk install app "$f" -auth "$ADMIN_USER:$PW" -update true --run-as-root 2>&1 \
     || echo "[install-apps] FAILED: $f"
   INSTALLED_ANY=1
 done
@@ -142,7 +135,7 @@ shopt -u nullglob
 
 if [ "$INSTALLED_ANY" = "1" ]; then
   echo "[install-apps] restarting splunkd"
-  /opt/splunk/bin/splunk restart || echo "[install-apps] splunk restart returned non-zero"
+  /opt/splunk/bin/splunk restart --run-as-root || echo "[install-apps] splunk restart returned non-zero"
 else
   echo "[install-apps] no packages found in s3://$BUCKET/ — skipping restart"
 fi
@@ -156,18 +149,5 @@ chmod +x /opt/splunk-poc/install-apps.sh
 # the script logs failures and continues. Wrap the whole call in `|| true` so
 # `set -e` from this outer script doesn't abort on a non-zero exit.
 /opt/splunk-poc/install-apps.sh || echo "[bootstrap] install-apps.sh returned non-zero (see /var/log/splunk-install-apps.log)"
-
-# ─── cloudflared sidecar (Docker) ──────────────────────────────────────
-# Runs alongside Splunk on the same host. cloudflared reaches Splunk over
-# localhost (no security-group cross-talk needed); the tunnel ingress config
-# is managed remotely by Cloudflare (config_src = "cloudflare") and rendered
-# by the Terraform cloudflared module.
-docker run -d \
-  --name cloudflared \
-  --restart=always \
-  --network=host \
-  -e TUNNEL_TOKEN="$${TUNNEL_TOKEN}" \
-  '${cloudflared_image}' \
-  tunnel --no-autoupdate --metrics 127.0.0.1:2000 run
 
 echo "[bootstrap] done $(date -Is)"

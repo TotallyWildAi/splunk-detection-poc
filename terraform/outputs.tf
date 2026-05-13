@@ -10,13 +10,13 @@ output "deployment_summary" {
 }
 
 output "splunk_url" {
-  description = "Splunk Web URL (fronted by Cloudflare Tunnel + Access)."
-  value       = "https://${var.splunk_web_hostname}"
+  description = "Splunk Web URL (fronted by the public ALB, HTTPS via ACM)."
+  value       = module.alb.splunk_url
 }
 
-output "hec_url" {
-  description = "Splunk HEC URL (fronted by Cloudflare Tunnel + Access). HEC endpoint path: /services/collector/event."
-  value       = "https://${var.splunk_hec_hostname}"
+output "alb_dns_name" {
+  description = "ALB DNS name. The Cloudflare CNAME for splunk_web_hostname resolves to this."
+  value       = module.alb.alb_dns_name
 }
 
 output "splunk_admin_email" {
@@ -37,11 +37,6 @@ output "splunk_instance_id" {
 output "splunk_private_ip" {
   description = "Private IP of the Splunk EC2 instance (reachable only from inside the VPC)."
   value       = module.splunk.private_ip
-}
-
-output "tunnel_id" {
-  description = "Cloudflare Tunnel ID."
-  value       = module.cloudflared.tunnel_id
 }
 
 output "github_actions_role_arn" {

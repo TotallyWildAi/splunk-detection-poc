@@ -9,8 +9,13 @@ output "vpc_cidr" {
 }
 
 output "public_subnet_id" {
-  description = "Public subnet ID."
+  description = "Primary public subnet ID (AZ-A, hosts the NAT GW and one ALB ENI)."
   value       = aws_subnet.public.id
+}
+
+output "public_subnet_id_b" {
+  description = "Secondary public subnet ID (AZ-B). Exists only to satisfy the ALB's two-AZ requirement."
+  value       = aws_subnet.public_b.id
 }
 
 output "private_subnet_id" {

@@ -13,15 +13,27 @@ variable "vpc_cidr" {
 }
 
 variable "availability_zone" {
-  description = "Single AZ used for the POC (one public subnet + one private subnet + one NAT)."
+  description = "Primary AZ. Hosts the NAT GW, the private subnet (Splunk EC2), and one of the two public subnets the ALB attaches to."
   type        = string
   default     = "ap-southeast-2a"
 }
 
+variable "availability_zone_b" {
+  description = "Secondary AZ. Hosts the second public subnet purely to satisfy the ALB's two-AZ requirement; no compute lives here."
+  type        = string
+  default     = "ap-southeast-2b"
+}
+
 variable "public_subnet_cidr" {
-  description = "CIDR for the public subnet (NAT GW + IGW)."
+  description = "CIDR for the primary public subnet (AZ-A — NAT GW + IGW + ALB ENI)."
   type        = string
   default     = "10.2.0.0/24"
+}
+
+variable "public_subnet_b_cidr" {
+  description = "CIDR for the secondary public subnet (AZ-B — ALB ENI only)."
+  type        = string
+  default     = "10.2.2.0/24"
 }
 
 variable "private_subnet_cidr" {
@@ -82,15 +94,14 @@ variable "splunk_version" {
   default     = "10.2.3"
 }
 
-# ─── Cloudflare (Tunnel + Access SSO) ──────────────────────────────────
-
-variable "cloudflare_account_id" {
-  description = "Cloudflare account ID that owns the tunnel and Access app. The CLOUDFLARE_API_TOKEN env var must be set when running terraform."
-  type        = string
-}
+# ─── Cloudflare DNS ────────────────────────────────────────────────────
+# Cloudflare is used as an authoritative DNS provider only — it publishes the
+# CNAME pointing at the ALB plus the ACM DNS-validation CNAMEs. No proxying,
+# no Tunnel, no Access app. CLOUDFLARE_API_TOKEN must be exported with the
+# Zone → DNS: Edit permission on the target zone.
 
 variable "cloudflare_zone_id" {
-  description = "Cloudflare zone ID for the Splunk DNS records."
+  description = "Cloudflare zone ID for the application DNS record + ACM validation records."
   type        = string
 }
 
@@ -100,60 +111,8 @@ variable "cloudflare_zone_name" {
 }
 
 variable "splunk_web_hostname" {
-  description = "Full FQDN that fronts Splunk Web (port 8000). Must be inside cloudflare_zone_name."
+  description = "Full FQDN that fronts Splunk Web (via ALB on 443). Must be inside cloudflare_zone_name."
   type        = string
-}
-
-variable "splunk_hec_hostname" {
-  description = "Full FQDN that fronts Splunk HEC (port 8088). Must be inside cloudflare_zone_name."
-  type        = string
-}
-
-variable "access_allowed_email_domains" {
-  description = "Email domains permitted by Cloudflare Access. May be empty if access_allowed_emails is set."
-  type        = list(string)
-  default     = []
-}
-
-variable "access_allowed_emails" {
-  description = "Specific email addresses permitted by Cloudflare Access. May be empty if access_allowed_email_domains is set."
-  type        = list(string)
-  default     = []
-
-  validation {
-    condition     = length(var.access_allowed_email_domains) + length(var.access_allowed_emails) >= 1
-    error_message = "Provide at least one entry across access_allowed_email_domains and access_allowed_emails."
-  }
-}
-
-variable "access_allowed_idp_ids" {
-  description = "Cloudflare Access IdP IDs to restrict authentication to. If empty, all IdPs configured on the account are offered."
-  type        = list(string)
-  default     = []
-}
-
-variable "access_auto_redirect_to_identity" {
-  description = "If true, skip the IdP picker and send users straight to the (single) configured IdP."
-  type        = bool
-  default     = false
-}
-
-variable "access_application_name" {
-  description = "Display name for the Cloudflare Access application protecting Splunk Web. Defaults to <name_prefix>-splunk."
-  type        = string
-  default     = ""
-}
-
-variable "access_policy_name" {
-  description = "Display name for the Cloudflare Access allow policy. Defaults to <name_prefix>-allow."
-  type        = string
-  default     = ""
-}
-
-variable "cloudflared_image" {
-  description = "cloudflared Docker image (pinned). Runs as a sidecar container on the Splunk EC2 instance."
-  type        = string
-  default     = "cloudflare/cloudflared:2026.3.0"
 }
 
 # ─── Scheduler (business-hours start/stop) ──────────────────────────────
