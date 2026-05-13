@@ -155,6 +155,20 @@ shopt -u nullglob
 # ownership before restarting.
 chown -R splunk:splunk /opt/splunk/etc/apps
 
+# Sync our CIM acceleration overrides into Splunk_SA_CIM/local/datamodels.conf.
+# Splunk silently ignores datamodel acceleration overrides from any app
+# other than Splunk_SA_CIM itself (regardless of app-precedence ordering).
+# The only reliable target is Splunk_SA_CIM/local/. tw_cim_accel ships the
+# canonical content; we copy it into place here so the live config matches
+# git-committed IaC.
+if [ -f /opt/splunk/etc/apps/tw_cim_accel/default/datamodels.conf ]; then
+  echo "[install-apps] syncing tw_cim_accel datamodels.conf -> Splunk_SA_CIM/local/"
+  install -d -m 755 -o splunk -g splunk /opt/splunk/etc/apps/Splunk_SA_CIM/local
+  cp /opt/splunk/etc/apps/tw_cim_accel/default/datamodels.conf \
+     /opt/splunk/etc/apps/Splunk_SA_CIM/local/datamodels.conf
+  chown splunk:splunk /opt/splunk/etc/apps/Splunk_SA_CIM/local/datamodels.conf
+fi
+
 if [ "$INSTALLED_ANY" = "1" ]; then
   echo "[install-apps] restarting splunkd via systemd"
   # `splunk restart --run-as-root` would start splunkd back as root and
