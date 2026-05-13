@@ -1,6 +1,18 @@
-<dashboard version="1.1" theme="dark">
+<dashboard version="1.1">
   <label>DMA Benchmark — tstats vs search</label>
   <description>Side-by-side comparison of |tstats (accelerated datamodel) vs |search (raw events) on the same dataset, plus per-datamodel acceleration health. Demonstrates the latency win from Data Model Acceleration.</description>
+
+  <!-- Global time picker. Every panel's search reads $tp.earliest$ + $tp.latest$
+       so the user can widen / narrow the demo window from one control. -->
+  <fieldset submitButton="false" autoRun="true">
+    <input type="time" token="tp" searchWhenChanged="true">
+      <label>Time range</label>
+      <default>
+        <earliest>-24h@h</earliest>
+        <latest>now</latest>
+      </default>
+    </input>
+  </fieldset>
 
   <row>
     <panel>
@@ -25,6 +37,7 @@
 | sort datamodel</query>
           <earliest>-15m</earliest>
           <latest>now</latest>
+          <sampleRatio>1</sampleRatio>
         </search>
         <option name="drilldown">none</option>
       </table>
@@ -36,26 +49,27 @@
       <title>|tstats over the Change datamodel — milliseconds</title>
       <single>
         <search>
-          <query>| tstats count from datamodel=Change where earliest=-24h
-| eval label = "events via tstats"</query>
-          <earliest>-15m</earliest>
-          <latest>now</latest>
+          <query>| tstats summariesonly=t count from datamodel=Change</query>
+          <earliest>$tp.earliest$</earliest>
+          <latest>$tp.latest$</latest>
         </search>
         <option name="drilldown">none</option>
         <option name="numberPrecision">0</option>
+        <option name="underLabel">events via |tstats (accelerated)</option>
       </single>
     </panel>
     <panel>
       <title>|search on raw events — seconds</title>
       <single>
         <search>
-          <query>search index=main sourcetype=aws:cloudtrail earliest=-24h
+          <query>search index=main sourcetype=aws:cloudtrail
 | stats count</query>
-          <earliest>-15m</earliest>
-          <latest>now</latest>
+          <earliest>$tp.earliest$</earliest>
+          <latest>$tp.latest$</latest>
         </search>
         <option name="drilldown">none</option>
         <option name="numberPrecision">0</option>
+        <option name="underLabel">events via raw |search</option>
       </single>
     </panel>
   </row>
@@ -65,14 +79,16 @@
       <title>Top CloudTrail actions (Change datamodel, accelerated)</title>
       <chart>
         <search>
-          <query>| tstats count from datamodel=Change where earliest=-24h by Change.action, Change.object_category
+          <query>| tstats summariesonly=t count from datamodel=Change by All_Changes.action, All_Changes.object_category
+| rename All_Changes.action AS action, All_Changes.object_category AS object_category
 | sort -count
 | head 20</query>
-          <earliest>-15m</earliest>
-          <latest>now</latest>
+          <earliest>$tp.earliest$</earliest>
+          <latest>$tp.latest$</latest>
         </search>
         <option name="charting.chart">bar</option>
         <option name="charting.legend.placement">right</option>
+        <option name="charting.axisTitleY.text">events</option>
         <option name="drilldown">none</option>
       </chart>
     </panel>
@@ -80,14 +96,16 @@
       <title>Authentication events by action (accelerated)</title>
       <chart>
         <search>
-          <query>| tstats count from datamodel=Authentication where earliest=-24h by Authentication.action, Authentication.app
+          <query>| tstats summariesonly=t count from datamodel=Authentication by Authentication.action, Authentication.app
+| rename Authentication.action AS action, Authentication.app AS app
 | sort -count
 | head 20</query>
-          <earliest>-15m</earliest>
-          <latest>now</latest>
+          <earliest>$tp.earliest$</earliest>
+          <latest>$tp.latest$</latest>
         </search>
         <option name="charting.chart">bar</option>
         <option name="charting.legend.placement">right</option>
+        <option name="charting.axisTitleY.text">events</option>
         <option name="drilldown">none</option>
       </chart>
     </panel>
@@ -100,10 +118,11 @@
         <body>
           <h3>What you're looking at</h3>
           <p>This POC enables Data Model Acceleration (DMA) on the
-          <b>Change</b> and <b>Authentication</b> CIM datamodels. Every 5 minutes
-          Splunk pre-summarizes the last 7 days of matching events into tsidx
-          files. <code>|tstats</code> reads those summary files directly,
-          skipping the raw-event scan that <code>|search</code> performs.</p>
+          <b>Change</b>, <b>Authentication</b>, and <b>Network_Traffic</b> CIM
+          datamodels. Every 5 minutes Splunk pre-summarizes the last 7 days of
+          matching events into tsidx files. <code>|tstats</code> reads those
+          summary files directly, skipping the raw-event scan that
+          <code>|search</code> performs.</p>
 
           <h3>Why DMA matters</h3>
           <ul>
@@ -119,18 +138,19 @@
             (tsidx summaries are typically ~10–20% of raw event size).</li>
           </ul>
 
-          <h3>Acceleration health interpretation</h3>
+          <h3>Notes</h3>
           <ul>
-            <li><code>completeness_pct = 100</code> — summary build caught
-            up to head of data. Searches return full-accuracy results.</li>
-            <li><code>completeness_pct &lt; 100</code> — build still
-            backfilling. <code>|tstats summariesonly=t</code> will under-count;
-            <code>summariesonly=f</code> falls back to raw search for the
-            unsummarized window.</li>
-            <li><code>build_in_progress = 1</code> — a summary-build search
-            is running right now.</li>
-            <li><code>size_mb</code> — current on-disk size of the
-            tsidx summaries.</li>
+            <li>The two count panels both read the same time range from the
+              picker at the top — change it to expand or narrow the demo
+              window. "Last 24 hours" is a good default for our event volume;
+              "Last 7 days" exercises the full DMA backfill window.</li>
+            <li>Both <code>|tstats</code> count panels use
+              <code>summariesonly=t</code>, so they only read from the
+              accelerated summaries. If you don't see numbers, the
+              acceleration build hasn't run yet — see the health table at the
+              top of the page for state.</li>
+            <li>The acceleration-health row queries Splunk's REST APIs and
+              isn't governed by the time picker.</li>
           </ul>
         </body>
       </html>
