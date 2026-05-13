@@ -65,6 +65,16 @@ module "alb" {
   tags = local.common_tags
 }
 
+module "cloudtrail_ingest" {
+  source = "./modules/cloudtrail_ingest"
+
+  name_prefix      = local.name_prefix
+  aws_region       = var.aws_region
+  splunk_role_name = aws_iam_role.splunk_ec2.name
+
+  tags = local.common_tags
+}
+
 module "scheduler" {
   source = "./modules/scheduler"
 

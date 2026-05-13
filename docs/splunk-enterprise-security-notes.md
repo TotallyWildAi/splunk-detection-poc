@@ -15,7 +15,7 @@ flowchart TB
     subgraph external["External"]
         Browser([Browser<br/>anywhere])
         GHA[GitHub Actions<br/>TotallyWildAi/splunk-detection-poc]
-        DataSources["AWS Data Sources<br/>CloudTrail · VPC Flow Logs<br/>GuardDuty · CloudWatch"]
+        APIs["AWS control-plane APIs<br/>(every region, every service)"]
         CFDNS["Cloudflare DNS<br/>splunk-poc.totallywild.ai<br/>(CNAME, unproxied)"]
     end
 
@@ -47,6 +47,12 @@ flowchart TB
             end
         end
 
+        subgraph ingest["Data-source plumbing"]
+            CT["CloudTrail<br/>multi-region · management events"]
+            CTBUCKET["S3: splunk-poc-cloudtrail-{acct}<br/>30d lifecycle · SSE-S3"]
+            CTQUEUE["SQS: splunk-poc-cloudtrail-events<br/>s3:ObjectCreated notifications"]
+        end
+
         subgraph awsmgmt["AWS managed services"]
             ACM["ACM certificate<br/>splunk-poc.totallywild.ai<br/>DNS-validated"]
             S3APPS["S3: splunk-poc-apps-637675605233<br/>5 app .tgz/.tar.gz/.spl files"]
@@ -64,7 +70,11 @@ flowchart TB
     ALB -->|target group :8000<br/>health check /en-US/account/login| SPL
     ACM -.->|TLS cert attached| ALB
 
-    DataSources -.->|"CloudTrail S3 / Flow Logs<br/>(via TA-aws SQS+S3 polling)"| TAWS
+    APIs -->|API events| CT
+    CT -->|writes JSON.gz| CTBUCKET
+    CTBUCKET -->|s3:ObjectCreated| CTQUEUE
+    CTQUEUE -->|"TA-aws SQS-based<br/>S3 input (poll)"| TAWS
+    CTBUCKET -.->|"GetObject<br/>(after queue notify)"| TAWS
     TAWS --> SPL
     CIM -.->|datamodels populated by| SPL
     ESCU -.->|detections run on| SPL
@@ -86,14 +96,17 @@ flowchart TB
     classDef notDeployed stroke:#ff6b6b,stroke-width:2px,stroke-dasharray: 5 5,fill:#3a1a1a,color:#fff;
     classDef installed stroke:#51cf66,fill:#1a3a1a,color:#fff;
     classDef secret fill:#2a2a3a,color:#fff,stroke:#888;
+    classDef ingestbox stroke:#4dabf7,fill:#1a2a3a,color:#fff;
 
     class ESBOX notDeployed
     class CIM,TAWS,ESCU,SSE,SAB installed
     class SMADMIN,OIDC,ACM secret
+    class CT,CTBUCKET,CTQUEUE ingestbox
 ```
 
 Legend:
 - **Green** boxes = apps actually installed on the running EC2
+- **Blue** boxes = data-ingestion plumbing (CloudTrail + S3 + SQS)
 - **Red dashed** box = where ES would slot in if licensed
 - **Dashed arrows** = data/config flow (vs solid for traffic)
 

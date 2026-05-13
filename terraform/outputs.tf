@@ -48,3 +48,19 @@ output "splunk_apps_bucket" {
   description = "S3 bucket name holding the Splunk app packages. Objects are NOT managed by Terraform — sync them via scripts/sync-apps.sh."
   value       = aws_s3_bucket.splunk_apps.bucket
 }
+
+# ─── CloudTrail ingestion (Phase 2.1) ──────────────────────────────────
+output "cloudtrail_bucket" {
+  description = "S3 bucket receiving CloudTrail logs (Splunk TA-aws reads from here via SQS notifications)."
+  value       = module.cloudtrail_ingest.bucket_name
+}
+
+output "cloudtrail_queue_url" {
+  description = "SQS queue URL — configure this as the queue for the Splunk_TA_aws 'SQS-Based S3' input."
+  value       = module.cloudtrail_ingest.queue_url
+}
+
+output "cloudtrail_queue_name" {
+  description = "SQS queue name (bare name) — TA-aws often wants the name, not the URL."
+  value       = module.cloudtrail_ingest.queue_name
+}
