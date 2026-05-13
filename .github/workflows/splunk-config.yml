@@ -13,6 +13,7 @@ name: splunk-config
 # connection to the splunkd management port (no public 8089 exposure).
 
 on:
+  workflow_dispatch:
   pull_request:
     branches: [main]
     paths:
