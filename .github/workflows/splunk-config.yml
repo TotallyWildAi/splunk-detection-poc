@@ -174,3 +174,40 @@ jobs:
         run: pip install pyyaml
       - name: Compile detections + push to SSE custom_content
         run: bash scripts/deploy-sse-custom-content.sh
+
+  deploy-detections:
+    # Compiles detections/*.yml into Splunk saved-search REST payloads and
+    # POSTs each one to /servicesNS/nobody/tw_cim_accel/saved/searches. The
+    # rules become scheduled, alerting saved searches Splunk runs on the
+    # */15 * * * * cron, dispatched against the previous 5-minute window.
+    # Same SSM-via-S3 architecture as deploy-sse-content (no public 8089).
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    needs: deploy-apps
+    environment: test
+    env:
+      AWS_REGION: ap-southeast-2
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ap-southeast-2
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.10.x
+      - name: Materialize backend config
+        run: |
+          cat > envs/test.backend.hcl <<EOF
+          bucket       = "twai-swarm-tfstate-637675605233"
+          key          = "splunk-detection-poc/test/terraform.tfstate"
+          region       = "ap-southeast-2"
+          use_lockfile = true
+          encrypt      = true
+          EOF
+      - run: terraform init -backend-config=../envs/test.backend.hcl
+        working-directory: terraform
+      - name: Install PyYAML for the compiler
+        run: pip install pyyaml
+      - name: Compile detections + push to saved/searches REST
+        run: bash scripts/deploy-detections.sh
