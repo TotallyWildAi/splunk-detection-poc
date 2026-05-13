@@ -1,0 +1,164 @@
+name: ai-draft-detection
+
+# Phase 6: AI-assisted detection drafting. Operator supplies a MITRE
+# technique + short description; Claude drafts a detections/aws/<name>.yml
+# conforming to ai-workflow/SCHEMA.md; we open a *draft* PR back to main
+# for human review. The PR is the gate — nothing here auto-merges.
+#
+# workflow_dispatch only by design. We don't want AI drafts firing off on
+# every issue/comment/push; the operator must explicitly press "Run
+# workflow" and own the inputs. See docs/ai-workflow.md for the runbook.
+
+on:
+  workflow_dispatch:
+    inputs:
+      technique:
+        description: 'MITRE technique ID (e.g. T1078.004)'
+        required: true
+        type: string
+      name:
+        description: 'Detection filename slug, kebab-case (becomes detections/aws/<name>.yml)'
+        required: true
+        type: string
+      description:
+        description: 'One-line hint: what should this detect?'
+        required: true
+        type: string
+      source_url:
+        description: 'Optional threat report / blog / advisory URL'
+        required: false
+        type: string
+        default: ''
+      model:
+        description: 'Claude model to use'
+        required: false
+        type: string
+        default: 'claude-sonnet-4-6'
+
+permissions:
+  contents: write        # we commit the drafted YAML on a new branch
+  pull-requests: write   # we open the draft PR
+
+jobs:
+  draft:
+    runs-on: ubuntu-latest
+    env:
+      BRANCH: ai-draft/${{ inputs.technique }}-${{ github.run_id }}
+      OUT_PATH: detections/aws/${{ inputs.name }}.yml
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          # fetch-depth: 0 isn't needed — we branch from the checked-out
+          # commit and push that as a new ref.
+
+      - name: Configure git identity for the bot commit
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Create the AI-draft branch
+        # run_id keeps the branch name unique even if two operators kick off
+        # drafts for the same technique concurrently.
+        run: |
+          set -euo pipefail
+          git checkout -b "$BRANCH"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Anthropic SDK + PyYAML
+        run: pip install anthropic pyyaml
+
+      - name: Draft detection YAML via Claude
+        # The script writes detections/aws/<name>.yml on success, exits
+        # non-zero with a stderr message on schema-validation failure.
+        # ANTHROPIC_API_KEY must be configured as a repo secret.
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          set -euo pipefail
+          args=(
+            --technique   "${{ inputs.technique }}"
+            --name        "${{ inputs.name }}"
+            --description "${{ inputs.description }}"
+            --out         "$OUT_PATH"
+            --model       "${{ inputs.model }}"
+          )
+          if [ -n "${{ inputs.source_url }}" ]; then
+            args+=( --source-url "${{ inputs.source_url }}" )
+          fi
+          python scripts/ai/draft-detection.py "${args[@]}"
+
+      - name: Commit + push if the drafter wrote a file
+        # Guard against the unlikely "script exited 0 but didn't touch the
+        # file" case — `git diff --quiet` returns non-zero only when there
+        # are changes, so we invert it.
+        run: |
+          set -euo pipefail
+          git add "$OUT_PATH"
+          if git diff --cached --quiet; then
+            echo "::error::draft-detection.py exited 0 but produced no file changes at $OUT_PATH"
+            exit 1
+          fi
+          git commit -m "feat: AI draft for ${{ inputs.technique }}: ${{ inputs.name }}"
+          git push origin "$BRANCH"
+
+      - name: Open draft PR for human review
+        # --draft is load-bearing: the entire point of this workflow is the
+        # human review gate. Do NOT enable auto-merge.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TECHNIQUE: ${{ inputs.technique }}
+          DESCRIPTION: ${{ inputs.description }}
+          SOURCE_URL: ${{ inputs.source_url }}
+          DET_NAME: ${{ inputs.name }}
+        run: |
+          set -euo pipefail
+          # Build the MITRE link — sub-technique T1078.004 → T1078/004
+          attack_path="${TECHNIQUE//./\/}"
+          attack_url="https://attack.mitre.org/techniques/${attack_path}/"
+
+          # Source-URL line is conditional — only render if the operator
+          # provided one.
+          source_line=""
+          if [ -n "$SOURCE_URL" ]; then
+            source_line="- Source: $SOURCE_URL"
+          fi
+
+          body="$(cat <<EOF
+AI-drafted detection for MITRE technique **${TECHNIQUE}**.
+
+- Technique: ${attack_url}
+- Description (operator input): ${DESCRIPTION}
+${source_line}
+
+This PR was generated by the \`ai-draft-detection\` workflow. The YAML
+under \`${OUT_PATH}\` is a *first draft* — please review carefully before
+merging. See \`docs/ai-workflow.md\` for the expanded review checklist.
+
+### Reviewer checklist
+
+- [ ] SPL targets the right data source for this technique
+- [ ] ATT&CK technique ID is accurate (not aspirational)
+- [ ] \`known_false_positives\` text is realistic for our environment
+- [ ] \`how_to_implement\` correctly states prereqs (DMA, TA-aws)
+- [ ] Tests block has at least one sample-event reference
+- [ ] Run the SPL manually against last-24h of real data — does it return sensible results?
+EOF
+)"
+
+          pr_url="$(gh pr create \
+            --draft \
+            --base main \
+            --head "$BRANCH" \
+            --title "AI draft: ${TECHNIQUE} — ${DET_NAME}" \
+            --body "$body")"
+
+          echo "Draft PR: $pr_url"
+          echo "pr_url=$pr_url" >> "$GITHUB_OUTPUT"
+          echo "### Draft PR opened" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "$pr_url" >> "$GITHUB_STEP_SUMMARY"
