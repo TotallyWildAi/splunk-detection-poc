@@ -40,7 +40,7 @@ flowchart TB
                             ESCU["DA-ESS-ContentUpdate<br/>(ESCU detections)"]
                             SSE["Splunk_Security_Essentials<br/>(detection browser)"]
                             SAB["splunk-add-on-builder"]
-                            POCACCEL["splunk_poc_cim_accel<br/>(first-party · DMA on for<br/>Change + Authentication)"]
+                            POCACCEL["tw_cim_accel<br/>(first-party · DMA on for<br/>Change + Authentication)"]
                             ESBOX["[Splunk Enterprise Security<br/>SplunkEnterpriseSecuritySuite]<br/>not deployed — license-gated"]
                         end
                         TSIDX["tsidx summaries<br/>(built every 5 min<br/>from accelerated DMs)"]

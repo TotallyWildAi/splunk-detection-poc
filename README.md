@@ -29,7 +29,7 @@ splunk-detection-poc/
 │   │   └── scheduler/         EventBridge schedule to start/stop EC2 (business hrs)
 │   └── envs/
 ├── apps-src/                  First-party Splunk apps (versioned in git)
-│   └── splunk_poc_cim_accel/  CIM datamodel acceleration overrides + benchmark dashboard
+│   └── tw_cim_accel/          CIM datamodel acceleration overrides + benchmark dashboard (named `tw_*` to win the Splunk_SA_CIM precedence battle)
 ├── splunk-apps/               Third-party Splunkbase packages (.tgz/.spl, gitignored)
 ├── scripts/sync-apps.sh       Builds .tgz from apps-src/, syncs all to S3, triggers install on EC2
 ├── detections/                Detection content (YAML + SPL), validated in CI
