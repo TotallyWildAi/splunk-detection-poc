@@ -76,6 +76,8 @@ curl -ks -u admin@totallywild.ai:$PW -X POST \
 
 **Splunk 10.2.x boot-start requires careful ownership.** The `.deb` chowns `/opt/splunk` to `splunk:splunk`; running `splunk start --run-as-root` may leave new files root-owned. The systemd unit runs as `User=splunk`, so any root-owned files break the next stop/start cycle. `user_data.sh.tftpl` handles this by chowning back to `splunk:splunk` before enabling boot-start, and `install-apps.sh` re-chowns after each app install and uses `systemctl restart Splunkd` (not `splunk restart --run-as-root`).
 
+**App precedence is case-insensitive alphabetical, later wins.** This bites any first-party app that tries to override `Splunk_SA_CIM`'s default `acceleration = false`. An app named `splunk_poc_cim_accel` sorts BEFORE `splunk_sa_cim` (poc < sa), so SA_CIM's `false` wins the merge and DMA never builds summaries. `splunk btool datamodels list Change --debug` reveals the merged source-of-each-key — use it to confirm overrides actually win. The fix is to rename the overriding app so it sorts after the base app (we use `tw_cim_accel`).
+
 ## Cost (per env, ap-southeast-2, business hours schedule)
 
 | Item | Monthly |
