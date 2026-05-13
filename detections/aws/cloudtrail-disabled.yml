@@ -42,14 +42,17 @@ references:
   - https://docs.aws.amazon.com/awscloudtrail/latest/userguide/cloudtrail-update-a-trail-console.html
 tags:
   analytic_story:
-    - AWS Defense Evasion
+    - AWS Defense Impairment
   asset_type: AWS Account
   confidence: 90
   impact: 90
   mitre_attack_id:
-    - T1562.008
+    # T1562.008 was retired in ATT&CK v19.1. The new ID is T1685.002
+    # (Disable or Modify Tools: Disable or Modify Cloud Log) under the new
+    # tactic TA0112 Defense Impairment.
+    - T1685.002
   kill_chain_phases:
-    - Defense Evasion
+    - Defense Impairment
   cis20:
     - CIS 8
   nist:
