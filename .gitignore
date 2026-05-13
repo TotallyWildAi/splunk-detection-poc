@@ -1,0 +1,35 @@
+# Terraform
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+crash.*.log
+
+# Per-env config files (NEVER commit) — keep the EXAMPLE templates
+envs/*.tfvars
+envs/*.backend.hcl
+!envs/EXAMPLE.tfvars
+!envs/EXAMPLE.backend.hcl
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Claude Code per-user permissions (do not commit)
+.claude/settings.local.json
+
+# Agent instructions (local-only — central files live in C:\code\_agent-instructions)
+AGENTS.md
+_agent-instructions.lnk
+
+# Secrets / env files (NEVER commit)
+.env
+.env.*
+!.env.example
+
+# Local
+*.log
+plan-output.txt

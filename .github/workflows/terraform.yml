@@ -1,0 +1,102 @@
+name: terraform
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - terraform/**
+      - envs/EXAMPLE.*
+      - .github/workflows/terraform.yml
+  push:
+    branches: [main]
+    paths:
+      - terraform/**
+      - envs/EXAMPLE.*
+      - .github/workflows/terraform.yml
+
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: write
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    env:
+      AWS_REGION: ap-southeast-2
+      TF_INPUT: 0
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ap-southeast-2
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.10.x
+      - name: Write env-specific tfvars and backend config
+        # The repo gitignores per-env files; for CI we materialize them from
+        # GitHub variables/secrets. For test, the values are in repo vars.
+        run: |
+          cat > envs/test.backend.hcl <<EOF
+          bucket       = "twai-swarm-tfstate-637675605233"
+          key          = "splunk-detection-poc/test/terraform.tfstate"
+          region       = "ap-southeast-2"
+          use_lockfile = true
+          encrypt      = true
+          EOF
+          # The tfvars come from a single repo variable to avoid drift.
+          # The user populates GitHub Actions repo variable TFVARS_TEST with
+          # the contents of envs/test.tfvars.
+          cat > envs/test.tfvars <<'SPLUNK_POC_TFVARS_EOF'
+          ${{ vars.TFVARS_TEST }}
+          SPLUNK_POC_TFVARS_EOF
+      - run: terraform init -backend-config=../envs/test.backend.hcl
+        working-directory: terraform
+      - run: terraform validate
+        working-directory: terraform
+      - run: terraform plan -var-file=../envs/test.tfvars -out=tfplan -no-color
+        working-directory: terraform
+      - name: Save plan as artifact
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan
+          path: terraform/tfplan
+
+  apply:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    needs: plan
+    environment: test
+    env:
+      AWS_REGION: ap-southeast-2
+      TF_INPUT: 0
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ap-southeast-2
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.10.x
+      - name: Materialize env files
+        run: |
+          cat > envs/test.backend.hcl <<EOF
+          bucket       = "twai-swarm-tfstate-637675605233"
+          key          = "splunk-detection-poc/test/terraform.tfstate"
+          region       = "ap-southeast-2"
+          use_lockfile = true
+          encrypt      = true
+          EOF
+          cat > envs/test.tfvars <<'SPLUNK_POC_TFVARS_EOF'
+          ${{ vars.TFVARS_TEST }}
+          SPLUNK_POC_TFVARS_EOF
+      - run: terraform init -backend-config=../envs/test.backend.hcl
+        working-directory: terraform
+      - run: terraform plan -var-file=../envs/test.tfvars -out=tfplan -no-color
+        working-directory: terraform
+      - run: terraform apply -auto-approve tfplan
+        working-directory: terraform
