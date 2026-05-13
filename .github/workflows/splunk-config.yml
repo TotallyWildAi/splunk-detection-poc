@@ -18,14 +18,16 @@ on:
     paths:
       - apps-src/**
       - detections/**
-      - scripts/sync-apps.sh
+      - taaws-config/**
+      - scripts/**
       - .github/workflows/splunk-config.yml
   push:
     branches: [main]
     paths:
       - apps-src/**
       - detections/**
-      - scripts/sync-apps.sh
+      - taaws-config/**
+      - scripts/**
       - .github/workflows/splunk-config.yml
 
 permissions:
@@ -211,3 +213,39 @@ jobs:
         run: pip install pyyaml
       - name: Compile detections + push to saved/searches REST
         run: bash scripts/deploy-detections.sh
+
+  deploy-taaws-config:
+    # Push the declarative TA-aws config (taaws-config/config.yml) — accounts
+    # + SQS-Based S3 inputs — to /servicesNS/.../Splunk_TA_aws via REST. This
+    # closes the "TA-aws is the one UI-configured layer" gap so the demo can
+    # claim end-to-end Splunk-config-as-code. Same SSM-via-S3 architecture.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    needs: deploy-apps
+    environment: test
+    env:
+      AWS_REGION: ap-southeast-2
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ap-southeast-2
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.10.x
+      - name: Materialize backend config
+        run: |
+          cat > envs/test.backend.hcl <<EOF
+          bucket       = "twai-swarm-tfstate-637675605233"
+          key          = "splunk-detection-poc/test/terraform.tfstate"
+          region       = "ap-southeast-2"
+          use_lockfile = true
+          encrypt      = true
+          EOF
+      - run: terraform init -backend-config=../envs/test.backend.hcl
+        working-directory: terraform
+      - name: Install PyYAML
+        run: pip install pyyaml
+      - name: Compile + push TA-aws account + inputs to REST
+        run: bash scripts/deploy-taaws-config.sh

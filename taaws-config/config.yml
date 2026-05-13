@@ -1,0 +1,53 @@
+# Splunk_TA_aws config-as-code.
+#
+# Declarative description of the TA-aws "Account" and "Input" stanzas the
+# Splunk EC2 should be running with. CI compiles this into REST PUT/POST
+# bodies and the on-host writer applies them via curl localhost:8089.
+#
+# Idempotent: re-running the deploy with no YAML changes is a no-op.
+
+accounts:
+  # POC uses a single AWS account with credentials sourced from the EC2
+  # instance profile (key_id + secret_key intentionally left blank — iam=1
+  # tells TA-aws to pull from instance metadata). The IAM perms TA-aws
+  # needs (s3:GetObject + ListBucket on the trail/flow buckets, SQS
+  # receive/delete on the queues) are attached by the cloudtrail_ingest
+  # and vpc_flow_logs_ingest Terraform modules.
+  - name: splunk-poc-ec2
+    category: 1   # 1 = Global (commercial AWS); 2 = AWS GovCloud; 4 = AWS China
+    iam: 1        # use EC2 instance profile credentials, no static keys
+
+inputs:
+  # SQS-Based S3 input — the modern TA-aws ingestion pattern. Each entry
+  # corresponds to one queue + one decoder. The Terraform modules
+  # cloudtrail_ingest and vpc_flow_logs_ingest provision the queues; this
+  # YAML wires Splunk to consume them.
+  aws_sqs_based_s3:
+
+    # `disabled` is intentionally NOT set — the update endpoint rejects it
+    # ("Argument 'disabled' is not supported by this handler"). To disable
+    # an input, hit /disable on the same path; to enable, /enable. Defaults
+    # to disabled=0 on create, which is what we want.
+    - name: cloudtrail-mgmt
+      aws_account: splunk-poc-ec2
+      sqs_queue_region: ap-southeast-2
+      sqs_queue_url: splunk-poc-cloudtrail-events   # bare name; TA-aws expands
+      s3_file_decoder: CloudTrail
+      sourcetype: aws:cloudtrail
+      index: main
+      interval: 30
+      sqs_batch_size: 10
+      sqs_sns_validation: 0   # S3 -> SQS direct (no SNS wrapping); MUST be 0
+      using_dlq: 0             # we don't provision a DLQ for the POC
+
+    - name: vpcflow
+      aws_account: splunk-poc-ec2
+      sqs_queue_region: ap-southeast-2
+      sqs_queue_url: splunk-poc-vpcflow-events
+      s3_file_decoder: VPCFlowLogs   # the UI label "VPCFlow" maps to this internal name
+      sourcetype: aws:cloudwatchlogs:vpcflow
+      index: main
+      interval: 30
+      sqs_batch_size: 10
+      sqs_sns_validation: 0
+      using_dlq: 0
