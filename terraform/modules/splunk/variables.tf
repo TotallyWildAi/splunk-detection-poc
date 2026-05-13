@@ -58,6 +58,11 @@ variable "instance_profile_name" {
   type        = string
 }
 
+variable "apps_s3_bucket" {
+  description = "S3 bucket containing Splunk app packages to install at boot."
+  type        = string
+}
+
 variable "tags" {
   description = "Tags merged onto every resource."
   type        = map(string)

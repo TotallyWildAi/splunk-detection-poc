@@ -59,6 +59,7 @@ locals {
     tunnel_token_secret_arn   = var.tunnel_token_secret_arn
     aws_region                = var.aws_region
     cloudflared_image         = var.cloudflared_image
+    apps_s3_bucket            = var.apps_s3_bucket
   })
 }
 

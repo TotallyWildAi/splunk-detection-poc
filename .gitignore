@@ -33,3 +33,10 @@ _agent-instructions.lnk
 # Local
 *.log
 plan-output.txt
+
+# Splunk app packages — third-party binaries, uploaded to S3 by Terraform.
+# Tracked README.md in splunk-apps/ explains what's expected to live there.
+splunk-apps/*.tgz
+splunk-apps/*.tar.gz
+splunk-apps/*.spl
+splunk-apps/*.zip

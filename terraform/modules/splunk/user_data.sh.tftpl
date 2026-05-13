@@ -10,6 +10,7 @@
 #   ${tunnel_token_secret_arn}       Secrets Manager ARN for the tunnel token.
 #   ${aws_region}                    Region for the secretsmanager calls.
 #   ${cloudflared_image}             cloudflared Docker image, pinned.
+#   ${apps_s3_bucket}                S3 bucket holding Splunk app packages.
 
 set -euxo pipefail
 exec > >(tee /var/log/splunk-bootstrap.log | logger -t splunk-bootstrap -s 2>/dev/console) 2>&1
@@ -86,6 +87,75 @@ done
   -uri https://localhost:8089 \
   -auth "${splunk_admin_email}:$${SPLUNK_PASSWORD}" \
   || echo "[bootstrap] HEC enable returned non-zero (may already be enabled)"
+
+# ─── Splunk app packages from S3 ───────────────────────────────────────
+# We pull every package from the Terraform-managed apps bucket and install it
+# with `splunk install app ... -update true` so re-runs overwrite existing
+# apps of the same name. The script is materialized at
+# /opt/splunk-poc/install-apps.sh so it can be re-run later via SSM whenever
+# new package versions are uploaded:
+#
+#   aws ssm send-command --instance-ids <id> \
+#     --document-name AWS-RunShellScript \
+#     --parameters 'commands=["/opt/splunk-poc/install-apps.sh"]'
+
+install -d -m 755 -o root -g root /opt/splunk-poc
+
+cat > /opt/splunk-poc/install-apps.sh <<'INSTALL_APPS_EOF'
+#!/usr/bin/env bash
+# Sync Splunk app packages from S3 and (re)install each one.
+# Safe to re-run: `splunk install app -update true` overwrites in place.
+set -uo pipefail
+
+LOG=/var/log/splunk-install-apps.log
+exec >>"$LOG" 2>&1
+
+echo "[install-apps] start $(date -Is)"
+
+BUCKET='${apps_s3_bucket}'
+REGION='${aws_region}'
+ADMIN_USER='${splunk_admin_email}'
+PW_SECRET_ARN='${admin_password_secret_arn}'
+STAGE=/tmp/splunk-apps
+
+PW="$(aws secretsmanager get-secret-value \
+  --region "$REGION" \
+  --secret-id "$PW_SECRET_ARN" \
+  --query SecretString --output text)"
+if [ -z "$PW" ]; then
+  echo "[install-apps] FAILED to read admin password from $PW_SECRET_ARN"
+  exit 1
+fi
+
+mkdir -p "$STAGE"
+aws s3 sync --region "$REGION" "s3://$BUCKET/" "$STAGE/"
+
+shopt -s nullglob
+INSTALLED_ANY=0
+for f in "$STAGE"/*.tgz "$STAGE"/*.tar.gz "$STAGE"/*.spl "$STAGE"/*.zip; do
+  echo "[install-apps] installing $f"
+  /opt/splunk/bin/splunk install app "$f" -auth "$ADMIN_USER:$PW" -update true 2>&1 \
+    || echo "[install-apps] FAILED: $f"
+  INSTALLED_ANY=1
+done
+shopt -u nullglob
+
+if [ "$INSTALLED_ANY" = "1" ]; then
+  echo "[install-apps] restarting splunkd"
+  /opt/splunk/bin/splunk restart || echo "[install-apps] splunk restart returned non-zero"
+else
+  echo "[install-apps] no packages found in s3://$BUCKET/ — skipping restart"
+fi
+
+echo "[install-apps] done $(date -Is)"
+INSTALL_APPS_EOF
+
+chmod +x /opt/splunk-poc/install-apps.sh
+
+# Initial bootstrap run. Don't fail cloud-init if individual packages error;
+# the script logs failures and continues. Wrap the whole call in `|| true` so
+# `set -e` from this outer script doesn't abort on a non-zero exit.
+/opt/splunk-poc/install-apps.sh || echo "[bootstrap] install-apps.sh returned non-zero (see /var/log/splunk-install-apps.log)"
 
 # ─── cloudflared sidecar (Docker) ──────────────────────────────────────
 # Runs alongside Splunk on the same host. cloudflared reaches Splunk over

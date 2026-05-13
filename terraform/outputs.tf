@@ -48,3 +48,13 @@ output "github_actions_role_arn" {
   description = "IAM role ARN for GitHub Actions to assume via OIDC. Set this as the AWS_DEPLOY_ROLE_ARN repository variable in GitHub."
   value       = aws_iam_role.gha_deploy.arn
 }
+
+output "splunk_apps_bucket" {
+  description = "S3 bucket name holding the Splunk app packages uploaded by Terraform."
+  value       = aws_s3_bucket.splunk_apps.bucket
+}
+
+output "splunk_apps_keys" {
+  description = "List of S3 object keys (filenames) currently uploaded to the Splunk apps bucket."
+  value       = sort(tolist(local.splunk_apps_files))
+}

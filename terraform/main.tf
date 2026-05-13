@@ -60,8 +60,15 @@ module "splunk" {
   cloudflared_image       = var.cloudflared_image
   tunnel_token_secret_arn = module.cloudflared.tunnel_token_secret_arn
   instance_profile_name   = aws_iam_instance_profile.splunk_ec2.name
+  apps_s3_bucket          = aws_s3_bucket.splunk_apps.bucket
 
   tags = local.common_tags
+
+  # The EC2 cloud-init script needs internet (apt update, splunk download,
+  # docker pulls). Without this dependency Terraform can race ahead and create
+  # the EC2 before the NAT Gateway + private route table association are
+  # ready, and cloud-init fails on apt-get with "Network is unreachable".
+  depends_on = [module.vpc]
 }
 
 module "scheduler" {
