@@ -64,3 +64,19 @@ output "cloudtrail_queue_name" {
   description = "SQS queue name (bare name) — TA-aws often wants the name, not the URL."
   value       = module.cloudtrail_ingest.queue_name
 }
+
+# ─── VPC Flow Logs ingestion (Phase 2.2) ───────────────────────────────
+output "vpc_flow_logs_bucket" {
+  description = "S3 bucket receiving VPC flow logs (Splunk TA-aws reads from here via SQS notifications, VPCFlow decoder)."
+  value       = module.vpc_flow_logs_ingest.bucket_name
+}
+
+output "vpc_flow_logs_queue_url" {
+  description = "SQS queue URL — configure this as the queue for the Splunk_TA_aws 'SQS-Based S3' input with S3 File Decoder = VPCFlow."
+  value       = module.vpc_flow_logs_ingest.queue_url
+}
+
+output "vpc_flow_logs_queue_name" {
+  description = "SQS queue name (bare name) — TA-aws often wants the name, not the URL."
+  value       = module.vpc_flow_logs_ingest.queue_name
+}

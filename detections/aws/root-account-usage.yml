@@ -1,0 +1,76 @@
+id: 38e21f72-7bc3-4aab-995d-7077db54e99b
+name: AWS Root Account Usage
+version: 1
+author: TotallyWildAi
+date: '2026-05-13'
+description: >-
+  Detects any AWS API activity performed by the account's root identity
+  (userIdentity.type=Root), excluding the AWS-internal service event
+  AwsServiceEvent. AWS guidance is to use the root user only for the
+  handful of operations that require it; any other root activity is
+  either policy drift or an indicator that root credentials have been
+  compromised.
+type: TTP
+data_source:
+  - aws_cloudtrail
+search: >-
+  search index=main sourcetype=aws:cloudtrail
+    userIdentity.type=Root
+    NOT eventType=AwsServiceEvent
+  | rename userIdentity.arn as userArn, userIdentity.accountId as awsAccountId,
+           sourceIPAddress as src
+  | stats count min(_time) as firstTime max(_time) as lastTime
+          values(eventName) as eventName values(eventSource) as eventSource
+          values(awsRegion) as awsRegion
+          values(userAgent) as userAgent
+          dc(eventName) as distinctEvents
+       by userArn awsAccountId src
+  | convert ctime(firstTime) ctime(lastTime)
+  | sort - count
+how_to_implement: >-
+  Requires Splunk_TA_aws ingesting CloudTrail management events.
+  Authored against raw aws:cloudtrail because userIdentity.type is not
+  surfaced by the Change CIM mapping. AwsServiceEvent records (e.g.
+  AWS-internal billing/maintenance operations) are excluded — they
+  legitimately appear as Root and aren't actionable.
+known_false_positives: >-
+  AWS account creation, AWS Organizations setup, billing console actions,
+  and a small set of root-only IAM operations (e.g. updating account
+  contacts, certain billing alerts) will legitimately fire. Tune by
+  scoping the alert to specific high-risk eventNames (e.g. only fire on
+  ConsoleLogin, CreateAccessKey, AttachUserPolicy with userName=root) if
+  the noise floor is too high.
+references:
+  - https://github.com/splunk/security_content/blob/develop/detections/cloud/aws_console_login_with_root_user.yml
+  - https://attack.mitre.org/techniques/T1078/004/
+  - https://docs.aws.amazon.com/IAM/latest/UserGuide/best-practices.html#lock-away-credentials
+tags:
+  analytic_story:
+    - AWS Identity and Access Management
+  asset_type: AWS Account
+  confidence: 80
+  impact: 95
+  mitre_attack_id:
+    - T1078.004
+  kill_chain_phases:
+    - Initial Access
+    - Privilege Escalation
+  cis20:
+    - CIS 5
+    - CIS 6
+  nist:
+    - PR.AC
+    - DE.CM
+tests:
+  - name: root console login
+    attack_data:
+      - file: aws/cloudtrail/root_console_login.json
+        sourcetype: aws:cloudtrail
+        source: cloudtrail
+    asset_pass_criteria: search returns >=1 event with userArn=*:root
+  - name: AwsServiceEvent under root (should NOT fire)
+    attack_data:
+      - file: aws/cloudtrail/root_service_event.json
+        sourcetype: aws:cloudtrail
+        source: cloudtrail
+    asset_pass_criteria: search returns 0 events

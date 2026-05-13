@@ -1,0 +1,74 @@
+id: 5b600740-d9c8-478b-9bee-61edc91bedc2
+name: AWS Console Login Without MFA
+version: 1
+author: TotallyWildAi
+date: '2026-05-13'
+description: >-
+  Detects successful AWS Management Console logins where MFA was not used
+  by a non-root IAM user. Console access without MFA violates baseline
+  AWS security hygiene (CIS 1.10) and is a primary indicator of either
+  policy drift or credential abuse using a stolen long-term password.
+type: TTP
+data_source:
+  - aws_cloudtrail
+search: >-
+  search index=main sourcetype=aws:cloudtrail
+    eventSource=signin.amazonaws.com eventName=ConsoleLogin
+    responseElements.ConsoleLogin=Success
+    additionalEventData.MFAUsed=No
+    NOT userIdentity.type=Root
+  | rename userIdentity.userName as user, userIdentity.arn as userArn,
+           userIdentity.type as identityType,
+           sourceIPAddress as src,
+           additionalEventData.MFAUsed as mfaUsed
+  | stats count min(_time) as firstTime max(_time) as lastTime
+          values(src) as src values(userAgent) as userAgent
+          values(awsRegion) as awsRegion
+       by user userArn identityType recipientAccountId mfaUsed
+  | convert ctime(firstTime) ctime(lastTime)
+how_to_implement: >-
+  Requires Splunk_TA_aws ingesting CloudTrail management events including
+  the dedicated us-east-1 sign-in region. additionalEventData.MFAUsed and
+  responseElements.ConsoleLogin are not in CIM Authentication, so this
+  detection runs against raw aws:cloudtrail.
+known_false_positives: >-
+  Federated SSO sign-ins (SAML, AWS SSO / IAM Identity Center) report
+  MFAUsed=No at the AWS layer even when the upstream IdP enforced MFA —
+  these are the dominant FP source. Tune by excluding
+  userIdentity.type=AssumedRole AND userIdentity.sessionContext.sessionIssuer.userName
+  matching known SSO role patterns, or by allowlisting
+  userIdentity.userName values that map to break-glass accounts with
+  documented compensating controls.
+references:
+  - https://github.com/splunk/security_content/blob/develop/detections/cloud/aws_console_login_without_mfa.yml
+  - https://attack.mitre.org/techniques/T1078/004/
+  - https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_mfa.html
+tags:
+  analytic_story:
+    - AWS Identity and Access Management
+  asset_type: AWS Account
+  confidence: 60
+  impact: 70
+  mitre_attack_id:
+    - T1078.004
+  kill_chain_phases:
+    - Initial Access
+    - Defense Evasion
+  cis20:
+    - CIS 6
+  nist:
+    - PR.AC
+    - DE.CM
+tests:
+  - name: IAM user login with no MFA
+    attack_data:
+      - file: aws/cloudtrail/console_login_no_mfa.json
+        sourcetype: aws:cloudtrail
+        source: cloudtrail
+    asset_pass_criteria: search returns >=1 event with mfaUsed=No
+  - name: IAM user login WITH MFA (should NOT fire)
+    attack_data:
+      - file: aws/cloudtrail/console_login_with_mfa.json
+        sourcetype: aws:cloudtrail
+        source: cloudtrail
+    asset_pass_criteria: search returns 0 events

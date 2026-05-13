@@ -75,6 +75,17 @@ module "cloudtrail_ingest" {
   tags = local.common_tags
 }
 
+module "vpc_flow_logs_ingest" {
+  source = "./modules/vpc_flow_logs_ingest"
+
+  name_prefix      = local.name_prefix
+  aws_region       = var.aws_region
+  vpc_id           = module.vpc.vpc_id
+  splunk_role_name = aws_iam_role.splunk_ec2.name
+
+  tags = local.common_tags
+}
+
 module "scheduler" {
   source = "./modules/scheduler"
 

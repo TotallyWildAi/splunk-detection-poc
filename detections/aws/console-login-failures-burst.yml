@@ -1,0 +1,78 @@
+id: aedbe2b0-f372-4c54-81ff-e718f7029045
+name: AWS Console Login Failures Burst By Source IP
+version: 1
+author: TotallyWildAi
+date: '2026-05-13'
+description: >-
+  Detects bursts of AWS Management Console login failures from a single
+  source IP — more than 5 failures within a 5-minute window. This pattern
+  is consistent with password spraying or credential-stuffing attempts
+  against AWS console endpoints.
+type: Anomaly
+data_source:
+  - aws_cloudtrail
+search: >-
+  search index=main sourcetype=aws:cloudtrail
+    eventSource=signin.amazonaws.com eventName=ConsoleLogin
+    responseElements.ConsoleLogin=Failure
+  | bucket _time span=5m
+  | stats count
+          values(userIdentity.userName) as attemptedUsers
+          dc(userIdentity.userName) as distinctUsers
+          values(userAgent) as userAgent
+          min(_time) as firstTime max(_time) as lastTime
+       by _time sourceIPAddress recipientAccountId
+  | where count > 5
+  | rename sourceIPAddress as src
+  | convert ctime(firstTime) ctime(lastTime)
+  | sort - count
+how_to_implement: >-
+  Requires Splunk_TA_aws ingesting CloudTrail management events including
+  the us-east-1 sign-in region (where ConsoleLogin events surface).
+  Authored against raw aws:cloudtrail rather than the Authentication CIM
+  because the responseElements.ConsoleLogin=Failure field — required to
+  distinguish failures from successes — is not preserved in the
+  Authentication datamodel mapping for CloudTrail at the time of writing.
+  Migrate to `tstats ... from datamodel=Authentication` once the
+  Phase 3.x Authentication mapping is in place.
+known_false_positives: >-
+  Misconfigured automation hammering the console signin endpoint with
+  stale credentials (e.g. expired AWS SSO session cookies, broken
+  browser-stored credentials, dev machines locked out after a password
+  rotation). Tune by allowlisting known office egress IPs or NAT gateway
+  ranges in `src`. A sustained low-rate spray below 5/5m will evade this
+  threshold by design — pair with a wider hunting query.
+references:
+  - https://github.com/splunk/security_content/blob/develop/detections/cloud/aws_multiple_failed_console_login_attempts.yml
+  - https://attack.mitre.org/techniques/T1110/001/
+  - https://attack.mitre.org/techniques/T1110/003/
+tags:
+  analytic_story:
+    - AWS Identity and Access Management
+    - Credential Access
+  asset_type: AWS Account
+  confidence: 65
+  impact: 60
+  mitre_attack_id:
+    - T1110.001
+    - T1110.003
+  kill_chain_phases:
+    - Credential Access
+  cis20:
+    - CIS 6
+  nist:
+    - PR.AC
+    - DE.CM
+tests:
+  - name: 6 failed logins from one IP within 5 min
+    attack_data:
+      - file: aws/cloudtrail/console_login_failures_burst.json
+        sourcetype: aws:cloudtrail
+        source: cloudtrail
+    asset_pass_criteria: search returns >=1 event with count>5
+  - name: 3 failed logins from one IP (under threshold, should NOT fire)
+    attack_data:
+      - file: aws/cloudtrail/console_login_failures_low.json
+        sourcetype: aws:cloudtrail
+        source: cloudtrail
+    asset_pass_criteria: search returns 0 events

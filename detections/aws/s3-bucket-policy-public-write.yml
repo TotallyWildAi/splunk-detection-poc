@@ -1,0 +1,84 @@
+id: 3ab9c8b2-8db4-4879-8309-3720dff5f042
+name: AWS S3 Bucket Policy Grants Public Write Or Wildcard
+version: 1
+author: TotallyWildAi
+date: '2026-05-13'
+description: >-
+  Detects PutBucketPolicy / PutBucketAcl calls that install a bucket
+  policy granting Principal "*" with an Allow effect on broad S3 actions
+  (s3:*, s3:Put*, s3:Delete*) — i.e. the bucket becomes world-writable
+  or world-readable for arbitrary actions. This is a classic exfiltration
+  staging pattern and a frequent root cause of publicly-exposed data.
+type: TTP
+data_source:
+  - aws_cloudtrail
+search: >-
+  search index=main sourcetype=aws:cloudtrail
+    eventSource=s3.amazonaws.com
+    (eventName=PutBucketPolicy OR eventName=PutBucketAcl)
+    errorCode=success OR NOT errorCode=*
+  | eval policyDoc=coalesce('requestParameters.bucketPolicy',
+                            'requestParameters.AccessControlPolicy')
+  | eval policyStr=tostring(policyDoc)
+  | search policyStr="*\"Principal\"*\"*\"*"
+           policyStr="*\"Effect\"*\"Allow\"*"
+           (policyStr="*\"s3:*\"*" OR policyStr="*\"s3:Put*\"*"
+            OR policyStr="*\"s3:Delete*\"*" OR policyStr="*\"*\"*")
+  | rename userIdentity.userName as user, userIdentity.arn as userArn,
+           requestParameters.bucketName as bucketName,
+           sourceIPAddress as src
+  | stats count min(_time) as firstTime max(_time) as lastTime
+          values(eventName) as eventName values(userAgent) as userAgent
+          values(policyStr) as policy
+       by user userArn bucketName awsRegion recipientAccountId src
+  | convert ctime(firstTime) ctime(lastTime)
+how_to_implement: >-
+  Requires Splunk_TA_aws ingesting CloudTrail management events. Runs
+  against raw aws:cloudtrail because the policy document is a nested JSON
+  blob in requestParameters that CIM Change doesn't expose. The string
+  matching is intentionally broad — it favours catching all wildcard
+  Allow policies and accepts some FP overhead to be handled by triage.
+known_false_positives: >-
+  Public-content buckets (static websites, public artifact mirrors) will
+  legitimately allow Principal "*" with s3:GetObject. Allowlist those
+  bucketName values, or replace the broad action match with strict
+  detection of write/delete actions only. CloudFront OAI policies and
+  cross-account replication policies also tend to look broad in raw
+  string form — verify by reading the actual policy doc on triage.
+references:
+  - https://github.com/splunk/security_content/blob/develop/detections/cloud/aws_s3_bucket_policy_with_wildcard_action.yml
+  - https://attack.mitre.org/techniques/T1567/
+  - https://attack.mitre.org/techniques/T1530/
+  - https://docs.aws.amazon.com/AmazonS3/latest/userguide/bucket-policies.html
+tags:
+  analytic_story:
+    - AWS Defense Evasion
+    - Data Exfiltration
+  asset_type: AWS S3 Bucket
+  confidence: 70
+  impact: 90
+  mitre_attack_id:
+    - T1567
+    - T1530
+  kill_chain_phases:
+    - Exfiltration
+    - Collection
+  cis20:
+    - CIS 3
+    - CIS 14
+  nist:
+    - PR.DS
+    - PR.AC
+tests:
+  - name: PutBucketPolicy grants s3:* to Principal *
+    attack_data:
+      - file: aws/cloudtrail/put_bucket_policy_world_writable.json
+        sourcetype: aws:cloudtrail
+        source: cloudtrail
+    asset_pass_criteria: search returns >=1 event with bucketName=*
+  - name: PutBucketPolicy granting access to specific account (should NOT fire)
+    attack_data:
+      - file: aws/cloudtrail/put_bucket_policy_scoped.json
+        sourcetype: aws:cloudtrail
+        source: cloudtrail
+    asset_pass_criteria: search returns 0 events

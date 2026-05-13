@@ -1,0 +1,70 @@
+id: bd220191-7f19-4010-bb1a-b7c132cb3dff
+name: AWS CloudTrail Disabled
+version: 1
+author: TotallyWildAi
+date: '2026-05-13'
+description: >-
+  Detects API calls that stop or delete an AWS CloudTrail trail
+  (StopLogging, DeleteTrail, UpdateTrail with logging disabled). Disabling
+  CloudTrail is a high-fidelity defense-evasion technique used to blind
+  incident response; in a healthy account this should be near-zero outside
+  of planned trail migrations.
+type: TTP
+data_source:
+  - aws_cloudtrail
+search: >-
+  | tstats summariesonly=t count min(_time) as firstTime max(_time) as lastTime
+    from datamodel=Change
+    where All_Changes.action=modified
+      AND All_Changes.object_category=Cloud
+      AND All_Changes.command IN ("StopLogging","DeleteTrail","UpdateTrail")
+    by All_Changes.user All_Changes.src All_Changes.object All_Changes.command
+      All_Changes.vendor_account
+  | `drop_dm_object_name("All_Changes")`
+  | rename command as eventName, object as trailName, vendor_account as awsAccountId
+  | where eventName!="UpdateTrail" OR like(trailName,"%")
+  | convert ctime(firstTime) ctime(lastTime)
+how_to_implement: >-
+  Requires Splunk_TA_aws ingesting CloudTrail management events into
+  index=main sourcetype=aws:cloudtrail, and the Change CIM datamodel
+  accelerated (Phase 3). UpdateTrail is included broadly because the
+  logging-disabled signal is in requestParameters which isn't in CIM —
+  triage UpdateTrail hits against raw events.
+known_false_positives: >-
+  Legitimate trail migrations or Terraform/CloudFormation tear-downs will
+  trigger StopLogging/DeleteTrail. Tune by allowlisting known automation
+  IAM roles (e.g. terraform-deploy, control-tower) in
+  All_Changes.user. UpdateTrail is noisier and may need to be split into
+  its own hunting detection if the FP rate is high in your environment.
+references:
+  - https://github.com/splunk/security_content/blob/develop/detections/cloud/aws_cloudtrail_log_stopped.yml
+  - https://attack.mitre.org/techniques/T1562/008/
+  - https://docs.aws.amazon.com/awscloudtrail/latest/userguide/cloudtrail-update-a-trail-console.html
+tags:
+  analytic_story:
+    - AWS Defense Evasion
+  asset_type: AWS Account
+  confidence: 90
+  impact: 90
+  mitre_attack_id:
+    - T1562.008
+  kill_chain_phases:
+    - Defense Evasion
+  cis20:
+    - CIS 8
+  nist:
+    - DE.CM
+    - PR.PT
+tests:
+  - name: StopLogging on management trail
+    attack_data:
+      - file: aws/cloudtrail/stop_logging.json
+        sourcetype: aws:cloudtrail
+        source: cloudtrail
+    asset_pass_criteria: search returns >=1 event with eventName=StopLogging
+  - name: DeleteTrail on org trail
+    attack_data:
+      - file: aws/cloudtrail/delete_trail.json
+        sourcetype: aws:cloudtrail
+        source: cloudtrail
+    asset_pass_criteria: search returns >=1 event with eventName=DeleteTrail

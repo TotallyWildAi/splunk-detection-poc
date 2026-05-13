@@ -1,0 +1,77 @@
+id: ceabd29d-6eb8-40ce-9d26-aedac557e26f
+name: IAM CreateAccessKey For Different User
+version: 1
+author: TotallyWildAi
+date: '2026-05-13'
+description: >-
+  Detects IAM CreateAccessKey calls where the caller is creating an
+  access key for a different IAM user (userIdentity.userName !=
+  requestParameters.userName). This pattern is a hallmark of credential
+  planting / backdoor account manipulation — a compromised admin issuing
+  long-lived keys on a less-monitored target user.
+type: TTP
+data_source:
+  - aws_cloudtrail
+search: >-
+  search index=main sourcetype=aws:cloudtrail
+    eventSource=iam.amazonaws.com eventName=CreateAccessKey
+    errorCode=success OR NOT errorCode=*
+  | rename userIdentity.userName as caller, userIdentity.arn as callerArn,
+           userIdentity.type as callerType,
+           requestParameters.userName as targetUser,
+           responseElements.accessKey.accessKeyId as newAccessKeyId
+  | where isnotnull(targetUser) AND targetUser!=caller
+  | stats count min(_time) as firstTime max(_time) as lastTime
+          values(newAccessKeyId) as newAccessKeyId
+          values(sourceIPAddress) as sourceIPAddress
+          values(userAgent) as userAgent
+       by caller callerArn callerType targetUser awsRegion recipientAccountId
+  | convert ctime(firstTime) ctime(lastTime)
+how_to_implement: >-
+  Requires Splunk_TA_aws ingesting CloudTrail management events. This
+  detection runs against raw events (not CIM) because the caller-vs-target
+  relationship requires both userIdentity.userName and
+  requestParameters.userName, which Change CIM doesn't preserve as
+  distinct fields.
+known_false_positives: >-
+  Legitimate admin provisioning workflows do this routinely (IT onboarding
+  scripts, break-glass setup). Tune by allowlisting known
+  provisioner principals in `caller` and / or scoping by `userAgent`
+  patterns matching internal automation. SSO/federated callers will show
+  callerType=AssumedRole with a role session name in caller — confirm the
+  role identity rather than the session string.
+references:
+  - https://github.com/splunk/security_content/blob/develop/detections/cloud/aws_iam_accesskey_operation_skip_notification.yml
+  - https://attack.mitre.org/techniques/T1098/
+  - https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_access-keys.html
+tags:
+  analytic_story:
+    - AWS Identity and Access Management
+  asset_type: IAM User
+  confidence: 70
+  impact: 80
+  mitre_attack_id:
+    - T1098
+    - T1078.004
+  kill_chain_phases:
+    - Persistence
+    - Privilege Escalation
+  cis20:
+    - CIS 5
+    - CIS 6
+  nist:
+    - PR.AC
+    - DE.CM
+tests:
+  - name: admin creates key for target user
+    attack_data:
+      - file: aws/cloudtrail/create_access_key_cross_user.json
+        sourcetype: aws:cloudtrail
+        source: cloudtrail
+    asset_pass_criteria: search returns >=1 event with caller!=targetUser
+  - name: self-rotation (should NOT fire)
+    attack_data:
+      - file: aws/cloudtrail/create_access_key_self.json
+        sourcetype: aws:cloudtrail
+        source: cloudtrail
+    asset_pass_criteria: search returns 0 events

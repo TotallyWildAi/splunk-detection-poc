@@ -1,0 +1,98 @@
+id: a0300fcc-75dc-4bc9-a6b7-6008cf38db47
+name: AWS Security Group Opened To World On Sensitive Port
+version: 1
+author: TotallyWildAi
+date: '2026-05-13'
+description: >-
+  Detects AuthorizeSecurityGroupIngress calls that add a 0.0.0.0/0 rule
+  on a sensitive port (SSH 22, RDP 3389, SMB 445, WinRM 5985/5986,
+  database ports, Redis, Elasticsearch). This is a common misconfiguration
+  pivot and a frequent adversary action to enable lateral access or
+  exfiltration paths.
+type: TTP
+data_source:
+  - aws_cloudtrail
+search: >-
+  search index=main sourcetype=aws:cloudtrail
+    eventSource=ec2.amazonaws.com eventName=AuthorizeSecurityGroupIngress
+    errorCode=success OR NOT errorCode=*
+    "0.0.0.0/0"
+  | spath path=requestParameters.ipPermissions.items{} output=perms
+  | mvexpand perms
+  | spath input=perms
+  | rename ipProtocol as proto, fromPort as fromPort, toPort as toPort,
+           "ipRanges.items{}.cidrIp" as cidrIps
+  | mvexpand cidrIps
+  | where cidrIps="0.0.0.0/0"
+  | eval sensitive_port=case(
+      fromPort<=22 AND toPort>=22, "ssh-22",
+      fromPort<=3389 AND toPort>=3389, "rdp-3389",
+      fromPort<=445 AND toPort>=445, "smb-445",
+      fromPort<=5985 AND toPort>=5985, "winrm-5985",
+      fromPort<=5986 AND toPort>=5986, "winrm-5986",
+      fromPort<=3306 AND toPort>=3306, "mysql-3306",
+      fromPort<=5432 AND toPort>=5432, "postgres-5432",
+      fromPort<=1433 AND toPort>=1433, "mssql-1433",
+      fromPort<=6379 AND toPort>=6379, "redis-6379",
+      fromPort<=9200 AND toPort>=9200, "elasticsearch-9200",
+      proto="-1", "all-protocols",
+      1=1, null())
+  | where isnotnull(sensitive_port)
+  | rename userIdentity.userName as user, userIdentity.arn as userArn,
+           requestParameters.groupId as securityGroupId,
+           sourceIPAddress as src
+  | stats count min(_time) as firstTime max(_time) as lastTime
+          values(sensitive_port) as sensitive_port
+          values(proto) as proto values(fromPort) as fromPort values(toPort) as toPort
+       by user userArn securityGroupId awsRegion recipientAccountId src
+  | convert ctime(firstTime) ctime(lastTime)
+how_to_implement: >-
+  Requires Splunk_TA_aws ingesting CloudTrail management events with
+  JSON spath available at search time. Runs against raw aws:cloudtrail
+  because the cidrIp / fromPort / toPort fields live in a nested
+  requestParameters array that CIM Change doesn't flatten.
+known_false_positives: >-
+  Public-facing ALB / NLB / API Gateway security groups legitimately
+  expose 80/443 to 0.0.0.0/0 — the port allowlist above excludes those.
+  Bastion-host SGs occasionally get a temporary 22/0.0.0.0/0 rule for
+  break-glass — tune by allowlisting bastion `securityGroupId` values or
+  known operator `user` principals. CDK/Terraform provisioning of new
+  public services will trip this; ensure those flows run under a known
+  automation role and consider exempting that role for non-22/3389 ports.
+references:
+  - https://github.com/splunk/security_content/blob/develop/detections/cloud/aws_security_group_with_unrestricted_access.yml
+  - https://attack.mitre.org/techniques/T1133/
+  - https://attack.mitre.org/techniques/T1190/
+  - https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-security-groups.html
+tags:
+  analytic_story:
+    - AWS Network ACL Activity
+    - AWS Cross Account Activity
+  asset_type: EC2 Security Group
+  confidence: 75
+  impact: 80
+  mitre_attack_id:
+    - T1133
+    - T1190
+  kill_chain_phases:
+    - Initial Access
+    - Persistence
+  cis20:
+    - CIS 12
+    - CIS 13
+  nist:
+    - PR.AC
+    - PR.IP
+tests:
+  - name: SG opens 22 to 0.0.0.0/0
+    attack_data:
+      - file: aws/cloudtrail/sg_authorize_ssh_world.json
+        sourcetype: aws:cloudtrail
+        source: cloudtrail
+    asset_pass_criteria: search returns >=1 event with sensitive_port=ssh-22
+  - name: SG opens 443 to 0.0.0.0/0 (should NOT fire)
+    attack_data:
+      - file: aws/cloudtrail/sg_authorize_https_world.json
+        sourcetype: aws:cloudtrail
+        source: cloudtrail
+    asset_pass_criteria: search returns 0 events
